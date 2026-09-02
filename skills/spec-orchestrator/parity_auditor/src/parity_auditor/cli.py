@@ -15,32 +15,78 @@ import json
 import shutil
 from typing import Set, List
 
-from .core.workspace import WorkspaceRepository, extract_metadata_from_content
-from .parsers.schema_router import parse_schema_file
-from .validators.uml import UmlValidator
-from .validators.behavioral import BehavioralValidator
-from .validators.codebase import CodebaseValidator
-from .validators.docs import DocsValidator
-from .validators.dependency_validator import DependencyValidator
-from .validators.sync_validator import SyncValidator
-from .validators.schema_mapping_validator import SchemaMappingValidator
-from .validators.profile_scoping_validator import ProfileScopingValidator
-from .validators.test_completeness_validator import TestCompletenessValidator
-from .validators.logical_ui_validator import LogicalUiValidator
-from .validators.cardinality_validator import SchemaCardinalityValidator
-from .validators.mermaid_syntax_validator import MermaidSyntaxValidator
-from .validators.katex_validator import KatexValidator
-from .validators.spec_filename_validator import SpecFilenameValidator
-from .validators.spec_title_uniqueness_validator import SpecTitleUniquenessValidator
-from .validators.source_reference_validator import SourceReferenceValidator
-from .validators.link_validator import LinkValidator
-from .validators.docstring_validator import DocstringValidator
-from .validators.profile_compliance_validator import ProfileComplianceValidator
-from .validators.concept_provenance_validator import ConceptProvenanceValidator
-from .validators.safety_trace_validator import SafetyTraceValidator
-from .validators.doc_metadata_validator import DocMetadataValidator
-from .utils.diagnostics import serialize_diagnostics
-from .utils.comment_utils import strip_comments_and_strings
+try:
+    from .core.workspace import WorkspaceRepository, extract_metadata_from_content
+    from .parsers.schema_router import parse_schema_file
+    from .validators.uml import UmlValidator
+    from .validators.behavioral import BehavioralValidator
+    from .validators.codebase import CodebaseValidator
+    from .validators.docs import DocsValidator
+    from .validators.dependency_validator import DependencyValidator
+    from .validators.sync_validator import SyncValidator
+    from .validators.schema_mapping_validator import SchemaMappingValidator
+    from .validators.profile_scoping_validator import ProfileScopingValidator
+    from .validators.test_completeness_validator import TestCompletenessValidator
+    from .validators.logical_ui_validator import LogicalUiValidator
+    from .validators.cardinality_validator import SchemaCardinalityValidator
+    from .validators.mermaid_syntax_validator import MermaidSyntaxValidator
+    from .validators.katex_validator import KatexValidator
+    from .validators.spec_filename_validator import SpecFilenameValidator
+    from .validators.spec_title_uniqueness_validator import SpecTitleUniquenessValidator
+    from .validators.source_reference_validator import SourceReferenceValidator
+    from .validators.link_validator import LinkValidator
+    from .validators.docstring_validator import DocstringValidator
+    from .validators.profile_compliance_validator import ProfileComplianceValidator
+    from .validators.concept_provenance_validator import ConceptProvenanceValidator
+    from .validators.safety_trace_validator import SafetyTraceValidator
+    from .validators.doc_metadata_validator import DocMetadataValidator
+    from .validators.icd_completeness_validator import ICDCompletenessValidator
+    from .validators.operational_allocation_validator import OperationalAllocationValidator
+    from .validators.standards_measurement_validator import StandardsAndMeasurementValidator
+    from .validators.conops_completeness_validator import ConopsCompletenessValidator, MissionIntentCompletenessValidator
+    from .validators.research_inventory_validator import ResearchInventoryValidator
+    from .validators.coverage_digest_validator import CoverageDigestValidator
+    from .validators.obligation_witness_validator import ObligationWitnessValidator
+    from .utils.diagnostics import serialize_diagnostics
+    from .utils.comment_utils import strip_comments_and_strings
+except (ImportError, ValueError):
+    _src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    if _src_dir not in sys.path:
+        sys.path.insert(0, _src_dir)
+    from parity_auditor.core.workspace import WorkspaceRepository, extract_metadata_from_content
+    from parity_auditor.parsers.schema_router import parse_schema_file
+    from parity_auditor.validators.uml import UmlValidator
+    from parity_auditor.validators.behavioral import BehavioralValidator
+    from parity_auditor.validators.codebase import CodebaseValidator
+    from parity_auditor.validators.docs import DocsValidator
+    from parity_auditor.validators.dependency_validator import DependencyValidator
+    from parity_auditor.validators.sync_validator import SyncValidator
+    from parity_auditor.validators.schema_mapping_validator import SchemaMappingValidator
+    from parity_auditor.validators.profile_scoping_validator import ProfileScopingValidator
+    from parity_auditor.validators.test_completeness_validator import TestCompletenessValidator
+    from parity_auditor.validators.logical_ui_validator import LogicalUiValidator
+    from parity_auditor.validators.cardinality_validator import SchemaCardinalityValidator
+    from parity_auditor.validators.mermaid_syntax_validator import MermaidSyntaxValidator
+    from parity_auditor.validators.katex_validator import KatexValidator
+    from parity_auditor.validators.spec_filename_validator import SpecFilenameValidator
+    from parity_auditor.validators.spec_title_uniqueness_validator import SpecTitleUniquenessValidator
+    from parity_auditor.validators.source_reference_validator import SourceReferenceValidator
+    from parity_auditor.validators.link_validator import LinkValidator
+    from parity_auditor.validators.docstring_validator import DocstringValidator
+    from parity_auditor.validators.profile_compliance_validator import ProfileComplianceValidator
+    from parity_auditor.validators.concept_provenance_validator import ConceptProvenanceValidator
+    from parity_auditor.validators.safety_trace_validator import SafetyTraceValidator
+    from parity_auditor.validators.doc_metadata_validator import DocMetadataValidator
+    from parity_auditor.validators.icd_completeness_validator import ICDCompletenessValidator
+    from parity_auditor.validators.operational_allocation_validator import OperationalAllocationValidator
+    from parity_auditor.validators.standards_measurement_validator import StandardsAndMeasurementValidator
+    from parity_auditor.validators.conops_completeness_validator import ConopsCompletenessValidator, MissionIntentCompletenessValidator
+    from parity_auditor.validators.research_inventory_validator import ResearchInventoryValidator
+    from parity_auditor.validators.coverage_digest_validator import CoverageDigestValidator
+    from parity_auditor.validators.obligation_witness_validator import ObligationWitnessValidator
+    from parity_auditor.utils.diagnostics import serialize_diagnostics
+    from parity_auditor.utils.comment_utils import strip_comments_and_strings
+
 
 def sanitize_github_token_env():
     """
@@ -220,7 +266,9 @@ def _main_impl():
     parser = argparse.ArgumentParser(description="Model Coverage Parity Audit CLI")
     parser.add_argument("schema_dir", nargs="?", help="Path to schema directory")
     parser.add_argument("features_dir", nargs="?", help="Path to feature specs directory")
+    parser.add_argument("--workspace", help="Path to workspace directory")
     parser.add_argument("--spec-only", action="store_true", help="Run in specification-only mode, bypassing codebase checks")
+    parser.add_argument("--schema-only", action="store_true", help="Run in schema/specification-only mode, bypassing codebase checks")
     parser.add_argument("--allow-missing-specs", action="store_true", default=True, help="Skip exiting with status code 1 when there are missing specification files")
     parser.add_argument("--no-allow-missing-specs", dest="allow_missing_specs", action="store_false", help="Exit with error code when specification files are missing (strict mode)")
     parser.add_argument("--ignore-issues", help="Comma-separated list of issue numbers or ranges to ignore (e.g., 14,16-18)")
@@ -233,20 +281,32 @@ def _main_impl():
                              "without blocking on unrelated drafts (issues #331, #321).")
     parser.add_argument("--scope-all", action="store_true", help="Check against ALL open feature issues (entire repo, not just local specs)")
     parser.add_argument("--sysml", action="store_true", help="Run SysML v2 model coverage parity validation")
+    parser.add_argument("--gate", help="Run specific quality gate (e.g. 26)")
+    parser.add_argument("--check-conops", help="Path to ConOps file to check")
+    parser.add_argument("--check-mission-intent", help="Path to Mission Intent file to check")
+    parser.add_argument("--synthesize-templates", action="store_true", help="Synthesize canonical ConOps and Mission Intent templates")
+    parser.add_argument("--synthesize-coverage-digest", action="store_true", help="Synthesize COVERAGE_DIGEST.md report")
+    parser.add_argument("--synthesize-witness-registry", action="store_true", help="Synthesize OBLIGATION_WITNESS_REGISTRY.md report")
+    parser.add_argument("--output-dir", help="Output directory for synthesized documents (default: docs/conops/ or docs/research/)")
     
     args = parser.parse_args()
+    if args.schema_only:
+        args.spec_only = True
     
-    # 1. Locate workspace directory dynamically starting from current working directory
+    # 1. Locate workspace directory dynamically starting from current working directory or explicit argument
     workspace_dir = None
-    curr = os.getcwd()
-    while True:
-        if os.path.exists(os.path.join(curr, ".pipeline", "logical-ui", "codebase_rules.json")):
-            workspace_dir = curr
-            break
-        parent = os.path.dirname(curr)
-        if parent == curr:
-            break
-        curr = parent
+    if args.workspace:
+        workspace_dir = os.path.abspath(args.workspace)
+    else:
+        curr = os.getcwd()
+        while True:
+            if os.path.exists(os.path.join(curr, ".pipeline", "logical-ui", "codebase_rules.json")):
+                workspace_dir = curr
+                break
+            parent = os.path.dirname(curr)
+            if parent == curr:
+                break
+            curr = parent
         
     # Fall back to script's directory traversal if not found in cwd hierarchy
     if not workspace_dir:
@@ -269,6 +329,40 @@ def _main_impl():
     
     # 2. Initialize WorkspaceRepository with the determined workspace_dir
     repo = WorkspaceRepository(workspace_dir)
+
+    if args.synthesize_templates:
+        out_dir = args.output_dir or os.path.join(repo.workspace_dir, "docs", "conops")
+        os.makedirs(out_dir, exist_ok=True)
+        c_val = ConopsCompletenessValidator()
+        m_val = MissionIntentCompletenessValidator()
+        c_path = os.path.join(out_dir, "CONOPS_CANONICAL_TEMPLATE.md")
+        m_path = os.path.join(out_dir, "MISSION_INTENT_CANONICAL_TEMPLATE.md")
+        c_val.synthesize_canonical_template(c_path)
+        m_val.synthesize_canonical_template(m_path)
+        print(f"Synthesized canonical ConOps template: {c_path}")
+        print(f"Synthesized canonical Mission Intent template: {m_path}")
+        sys.exit(0)
+
+    if args.synthesize_coverage_digest:
+        out_dir = args.output_dir or os.path.join(repo.workspace_dir, "docs", "research")
+        os.makedirs(out_dir, exist_ok=True)
+        cov_val = CoverageDigestValidator()
+        cov_path = os.path.join(out_dir, "COVERAGE_DIGEST.md")
+        with open(cov_path, "w", encoding="utf-8") as f:
+            f.write(cov_val.synthesize_coverage_digest(repo))
+        print(f"Synthesized Coverage Digest report: {cov_path}")
+        sys.exit(0)
+
+    if args.synthesize_witness_registry:
+        out_dir = args.output_dir or os.path.join(repo.workspace_dir, "docs", "research")
+        os.makedirs(out_dir, exist_ok=True)
+        wit_val = ObligationWitnessValidator()
+        wit_path = os.path.join(out_dir, "OBLIGATION_WITNESS_REGISTRY.md")
+        with open(wit_path, "w", encoding="utf-8") as f:
+            f.write(wit_val.synthesize_witness_registry(repo))
+        print(f"Synthesized Obligation-Witness Registry: {wit_path}")
+        sys.exit(0)
+
     
     # 3. Check if the codebase rules file exists
     rules_path = repo.get_codebase_rules_path()
@@ -320,9 +414,21 @@ def _main_impl():
     epics_dir = os.path.join(repo.workspace_dir, epics_dir_rel) if epics_dir_rel else None
         
     has_failed = False
+    # Upstream compiler repository mode: this workspace is the upstream
+    # Specification Core Compiler (sentinel: .pipeline/upstream), whose landing
+    # zones are clean and which has no client app codebases BY DESIGN. See the
+    # Clean Landing Zone Invariant in .pipeline/constitution.md and the
+    # #68 reconciler exemption.
+    upstream_mode = repo.is_upstream_compiler_repo() and not repo.has_configured_target_code_directories()
+
     print("=== Model Coverage Parity Audit ===")
     print(f"Scanning schemas in: {schema_dir}")
     print(f"Scanning feature specifications in: {features_dir}\n")
+    if upstream_mode:
+        print("[*] UPSTREAM COMPILER REPOSITORY MODE ENGAGED - skipped stages: "
+              "missing-local-specification out-of-sync finding, "
+              "empty-codebase Schema Mapping, empty-codebase Profile Scoping, "
+              "empty-codebase Test Completeness.")
     
     # 1. Parse all modules
     modules = {}
@@ -395,34 +501,38 @@ def _main_impl():
             open_issues = [issue for issue in open_issues if issue.get("number") in local_issue_ids]
 
     missing_specs = []
-    for issue in open_issues:
-        issue_number = issue.get("number")
-        issue_title = issue.get("title", "")
-        found = False
-        for f in features:
-            fm_data = extract_metadata_from_content(f.content)
-            if fm_data and fm_data.get("issue_id") == issue_number:
-                found = True
-                break
-
-            # Existing filename check as fallback only when no metadata present
-            if not fm_data:
-                basename = os.path.splitext(f.filename)[0]
-                m = re.search(r'(?:^|\D)(\d+)(?:$|\D)', basename)
-                if m and int(m.group(1)) == issue_number:
+    missing_spec_errors = []
+    if not upstream_mode:
+        for issue in open_issues:
+            issue_number = issue.get("number")
+            issue_title = issue.get("title", "")
+            found = False
+            for f in features:
+                fm_data = extract_metadata_from_content(f.content)
+                if fm_data and fm_data.get("issue_id") == issue_number:
                     found = True
                     break
-        if not found:
-            missing_specs.append(f"Issue #{issue_number}: '{issue_title}'")
-            
-    missing_spec_errors = []
-    if missing_specs:
-        print("[!] Missing local specification files for open feature issues:")
-        for spec in missing_specs:
-            print(f"  - {spec}")
-        if not args.allow_missing_specs:
-            missing_spec_errors = missing_specs[:]
-            has_failed = True
+
+                # Existing filename check as fallback only when no metadata present
+                if not fm_data:
+                    basename = os.path.splitext(f.filename)[0]
+                    m = re.search(r'(?:^|\D)(\d+)(?:$|\D)', basename)
+                    if m and int(m.group(1)) == issue_number:
+                        found = True
+                        break
+            if not found:
+                missing_specs.append(f"Issue #{issue_number}: '{issue_title}'")
+
+        if missing_specs:
+            print("[!] Missing local specification files for open feature issues:")
+            for spec in missing_specs:
+                print(f"  - {spec}")
+            if not args.allow_missing_specs:
+                missing_spec_errors = missing_specs[:]
+                has_failed = True
+    else:
+        print("Note: Missing-local-specification cross-reference skipped: docs/features is a " 
+              "clean landing zone in the upstream compiler repository (interior tooling features, issues #74/#73/#72/#70/#67/#64/#62/#61/#60/#59).")
         
     epic_files = []
     if epics_dir and os.path.exists(epics_dir):
@@ -1014,8 +1124,107 @@ def _main_impl():
     else:
         print("Success: Document metadata tables and frontmatter valid across all markdown documents.")
 
+    print("\n=== ICD Completeness & Signal Flow Parity Audit ===")
+    icd_completeness_validator = ICDCompletenessValidator()
+    icd_completeness_errors = _scope_findings(icd_completeness_validator.validate(repo, schemas_dir=schema_dir), getattr(args, 'only', None))
+    if icd_completeness_errors:
+        print("[!] ICD Completeness Violations Identified:")
+        for err in icd_completeness_errors:
+            print(f"  - {err}")
+        has_failed = True
+    else:
+        print("Success: Level 1C ICD port connectivity, N² matrix, and signal dictionary verified.")
+
+    print("\n=== Operational-to-Resource Allocation Audit (Gate 24) ===")
+    operational_allocation_validator = OperationalAllocationValidator()
+    operational_allocation_errors = _scope_findings(operational_allocation_validator.validate(repo, allow_missing_specs=getattr(args, 'allow_missing_specs', True)), getattr(args, 'only', None))
+    if operational_allocation_errors:
+        print("[!] Operational-to-Resource Allocation Violations Identified:")
+        for err in operational_allocation_errors:
+            print(f"  - {err}")
+        has_failed = True
+    else:
+        print("Success: Operational-to-Resource Allocation (Theorem 1 and Theorem 2) verified.")
+
+    print("\n=== Standards & SI 7D Parameter Metrology Audit (Gate 25) ===")
+    standards_measurement_validator = StandardsAndMeasurementValidator()
+    standards_measurement_errors = _scope_findings(standards_measurement_validator.validate(repo), getattr(args, 'only', None))
+    if standards_measurement_errors:
+        print("[!] Standards & Parameter Metrology Violations Identified:")
+        for err in standards_measurement_errors:
+            print(f"  - {err}")
+        has_failed = True
+    else:
+        print("Success: Standards taxonomy lattice and SI 7D parameter metrology verified.")
+
+    print("\n=== ConOps & Mission Intent Completeness Audit (Gate 26) ===")
+    conops_validator = ConopsCompletenessValidator()
+    conops_errors = _scope_findings(conops_validator.validate(repo), getattr(args, 'only', None))
+    if conops_errors:
+        print("[!] ConOps Completeness Violations Identified:")
+        for err in conops_errors:
+            print(f"  - {err}")
+        has_failed = True
+    else:
+        print("Success: 12-Section ConOps completeness and SORA GRB / Emergency determinism verified.")
+
+    mission_intent_validator = MissionIntentCompletenessValidator()
+    mission_intent_errors = _scope_findings(mission_intent_validator.validate(repo), getattr(args, 'only', None))
+    if mission_intent_errors:
+        print("[!] Mission Intent Completeness Violations Identified:")
+        for err in mission_intent_errors:
+            print(f"  - {err}")
+        has_failed = True
+    else:
+        print("Success: 10-Section Mission Intent completeness and Bingo Energy math verified.")
+
+    print("\n=== Cited Research Inventory & Declared-Total Population Register Audit (Gate 27) ===")
+    research_inventory_validator = ResearchInventoryValidator()
+    research_inventory_errors = _scope_findings(research_inventory_validator.validate(repo), getattr(args, 'only', None))
+    if research_inventory_errors:
+        print("[!] Cited Research Inventory Violations Identified:")
+        for err in research_inventory_errors:
+            print(f"  - {err}")
+        has_failed = True
+    else:
+        print("Success: Cited research inventory schema and declared-total population register verified.")
+
+    print("\n=== Coverage-Digest Population Audit (Gate 28) ===")
+    coverage_digest_validator = CoverageDigestValidator()
+    coverage_digest_errors = _scope_findings(
+        coverage_digest_validator.validate(repo, allow_missing_specs=getattr(args, 'allow_missing_specs', True)),
+        getattr(args, 'only', None)
+    )
+    if coverage_digest_errors:
+        print("[!] Coverage Digest Violations Identified:")
+        for err in coverage_digest_errors:
+            print(f"  - {err}")
+        has_failed = True
+    else:
+        print("Success: Coverage digest population metrics and realized obligations verified.")
+
+    print("\n=== Obligation-Witness Registry Audit (Gate 29) ===")
+    obligation_witness_validator = ObligationWitnessValidator()
+    obligation_witness_errors = _scope_findings(
+        obligation_witness_validator.validate(
+            repo,
+            allow_missing_specs=getattr(args, 'allow_missing_specs', True),
+            spec_only=getattr(args, 'spec_only', False),
+        ),
+        getattr(args, 'only', None)
+    )
+    if obligation_witness_errors:
+        print("[!] Obligation Witness Registry Violations Identified:")
+        for err in obligation_witness_errors:
+            print(f"  - {err}")
+        has_failed = True
+    else:
+        print("Success: Multi-dimensional obligation witness registry verified.")
+
     if has_failed:
-        all_errors = (uml_errors or []) + (behavioral_errors or []) + (codebase_errors or []) + (doc_errors or []) + (dependency_errors or []) + (sync_errors or []) + (schema_mapping_errors or []) + (profile_scoping_errors or []) + (test_completeness_errors or []) + (cardinality_errors or []) + (spec_filename_errors or []) + (spec_title_errors or []) + (mermaid_syntax_errors or []) + (katex_errors or []) + (logical_ui_errors or []) + (docstring_errors or []) + (profile_compliance_errors or []) + (package_allocation_errors or []) + (feature_op_errors or []) + (interaction_errors or []) + (safety_constraint_errors or []) + (acceptance_test_errors or []) + (missing_spec_errors or []) + (source_ref_errors or []) + (link_errors or []) + (concept_provenance_errors or []) + (safety_trace_errors or []) + (doc_metadata_errors or [])
+        all_errors = (uml_errors or []) + (behavioral_errors or []) + (codebase_errors or []) + (doc_errors or []) + (dependency_errors or []) + (sync_errors or []) + (schema_mapping_errors or []) + (profile_scoping_errors or []) + (test_completeness_errors or []) + (cardinality_errors or []) + (spec_filename_errors or []) + (spec_title_errors or []) + (mermaid_syntax_errors or []) + (katex_errors or []) + (logical_ui_errors or []) + (docstring_errors or []) + (profile_compliance_errors or []) + (package_allocation_errors or []) + (feature_op_errors or []) + (interaction_errors or []) + (safety_constraint_errors or []) + (acceptance_test_errors or []) + (missing_spec_errors or []) + (source_ref_errors or []) + (link_errors or []) + (concept_provenance_errors or []) + (safety_trace_errors or []) + (doc_metadata_errors or []) + (icd_completeness_errors or []) + (operational_allocation_errors or []) + (standards_measurement_errors or []) + (conops_errors or []) + (mission_intent_errors or []) + (research_inventory_errors or []) + (coverage_digest_errors or []) + (obligation_witness_errors or [])
+
+
         compiled_errors = all_errors
         target_file = None
         snippet_content = None
@@ -1066,7 +1275,7 @@ def main():
     except Exception:
         import traceback
         traceback.print_exc()
-        upstream_repo = os.environ.get("UPSTREAM_REPOSITORY") or os.environ.get("GIT_REMOTE_ORIGIN") or "gintatkinson/uas-003"
+        upstream_repo = os.environ.get("UPSTREAM_REPOSITORY") or os.environ.get("GIT_REMOTE_ORIGIN") or "gintatkinson/DEAP01-spec-core"
         try:
             script_dir = os.path.dirname(os.path.abspath(__file__))
             workspace_dir = None
