@@ -148,7 +148,14 @@ def validate_mermaid_node_label_quoting(line: str) -> List[str]:
         closer = SHAPE_PAIRS[opener]
         
         start_idx = match.end()
-        end_idx = line.find(closer, start_idx)
+        if start_idx < len(line) and line[start_idx] == '"':
+            end_quote = line.find('"' + closer, start_idx + 1)
+            if end_quote != -1:
+                end_idx = end_quote + 1
+            else:
+                end_idx = line.rfind(closer, start_idx)
+        else:
+            end_idx = line.find(closer, start_idx)
         if end_idx != -1:
             label = line[start_idx:end_idx].strip()
             if not label:
