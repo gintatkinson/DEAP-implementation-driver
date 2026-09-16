@@ -54,9 +54,14 @@ from .validators.conops_completeness_validator import ConopsCompletenessValidato
 from .validators.research_inventory_validator import ResearchInventoryValidator
 from .validators.coverage_digest_validator import CoverageDigestValidator
 from .validators.obligation_witness_validator import ObligationWitnessValidator
+from .validators.semantic_diagram_ast_validator import SemanticDiagramASTValidator
+from .validators.semantic_prose_invariant_validator import SemanticProseInvariantValidator
+from .validators.factual_grounding_validator import FactualGroundingValidator
+from .validators.cross_document_diagram_parity_validator import CrossDocumentDiagramParityValidator
+from .validators.executive_deliverable_traceability_validator import ExecutiveDeliverableTraceabilityValidator
 
 # Validators migrated to structured findings. Un-migrated validators are deliberately
-# excluded rather than included and silently ungroupable — see `coverage_note`.
+# excluded rather than included and silently ungroupable -- see `coverage_note`.
 # Migration progress is gated by tests/test_validator_findings_migration_issue304.py,
 # which asserts that every module listed as migrated is also listed here: wrapping an
 # emission in Finding without wiring the validator in produces rule ids that reach no
@@ -93,6 +98,11 @@ AGGREGATING_VALIDATORS = (
     ResearchInventoryValidator,
     CoverageDigestValidator,
     ObligationWitnessValidator,
+    SemanticDiagramASTValidator,
+    SemanticProseInvariantValidator,
+    FactualGroundingValidator,
+    CrossDocumentDiagramParityValidator,
+    ExecutiveDeliverableTraceabilityValidator,
 )
 
 # SyncValidator is migrated to structured findings but deliberately absent: it shells

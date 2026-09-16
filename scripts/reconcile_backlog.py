@@ -503,6 +503,12 @@ class GitLabV4Provider:
             val = os.environ.get(env_var)
             if val and val.strip():
                 return val.strip()
+        group_val = os.environ.get("GITLAB_GROUP") or os.environ.get("GL_GROUP")
+        project_val = os.environ.get("GITLAB_PROJECT_NAME") or os.environ.get("GL_PROJECT_NAME")
+        if group_val and project_val:
+            return f"{group_val.strip().rstrip('/')}/{project_val.strip().lstrip('/')}"
+        if group_val and not project_val:
+            return group_val.strip()
         remote_info = get_git_remote_info(self.workspace_dir)
         if remote_info and remote_info.get("project_path"):
             return remote_info["project_path"]
@@ -522,16 +528,25 @@ class GitLabV4Provider:
         glab_path = shutil.which("glab")
         if glab_path:
             try:
+                status_res = subprocess.run([glab_path, "auth", "status", "--show-token"], capture_output=True, text=True, timeout=5)
+                m = re.search(r'Token(?:\s+found\s+in\s+operating\s+system\s+keyring)?:\s*([A-Za-z0-9_\.\-]+)', (status_res.stdout or '') + '\n' + (status_res.stderr or ''))
+                if m:
+                    return m.group(1).strip(), "PRIVATE-TOKEN"
+            except Exception:
+                pass
+            try:
                 res = subprocess.run([glab_path, "auth", "token"], capture_output=True, text=True, timeout=5)
-                if res.returncode == 0 and res.stdout.strip():
+                if res.returncode == 0 and res.stdout.strip() and '\n' not in res.stdout.strip() and ' ' not in res.stdout.strip() and 'USAGE' not in res.stdout:
                     return res.stdout.strip(), "PRIVATE-TOKEN"
             except Exception:
                 pass
         try:
             hostname = urllib.parse.urlparse(self.server_url).hostname or "gitlab.com"
             auth = netrc.netrc().authenticators(hostname)
-            if auth and auth[2] and auth[2].strip():
-                return auth[2].strip(), "PRIVATE-TOKEN"
+            if auth:
+                token_val = (auth[2] or auth[0] or "").strip()
+                if token_val:
+                    return token_val, "PRIVATE-TOKEN"
         except Exception:
             pass
         return None, "PRIVATE-TOKEN"
@@ -588,6 +603,10 @@ class GitLabV4Provider:
                 raw_err = e.read().decode("utf-8", errors="ignore") if e.fp else ""
                 
                 if status_code in (429, 502, 503, 504) and attempt < self.max_retries:
+                    try:
+                        e.close()
+                    except Exception:
+                        pass
                     retry_after = error_headers.get("Retry-After")
                     if retry_after and retry_after.isdigit():
                         sleep_time = float(retry_after)
@@ -596,6 +615,10 @@ class GitLabV4Provider:
                     time.sleep(sleep_time)
                     continue
                 
+                try:
+                    e.close()
+                except Exception:
+                    pass
                 raise RuntimeError(
                     f"GitLab API HTTP {status_code} Error on {method} {url}: {raw_err}"
                 ) from e
@@ -650,8 +673,14 @@ class GitLabV4Provider:
                 for issue in issues:
                     if "iid" in issue:
                         issue["number"] = issue["iid"]
+                        issue["issue_id"] = issue["iid"]
                     if "state" in issue:
-                        issue["state"] = str(issue["state"]).upper()
+                        state_str = str(issue["state"]).upper()
+                        if state_str == "OPEN":
+                            state_str = "OPENED"
+                        issue["state"] = state_str
+                    if "description" in issue:
+                        issue["body"] = issue["description"]
                     all_issues.append(issue)
 
                 next_page_hdr = headers.get("X-Next-Page") or headers.get("x-next-page")
@@ -677,8 +706,14 @@ class GitLabV4Provider:
                 for issue in issues:
                     if "iid" in issue:
                         issue["number"] = issue["iid"]
+                        issue["issue_id"] = issue["iid"]
                     if "state" in issue:
-                        issue["state"] = str(issue["state"]).upper()
+                        state_str = str(issue["state"]).upper()
+                        if state_str == "OPEN":
+                            state_str = "OPENED"
+                        issue["state"] = state_str
+                    if "description" in issue:
+                        issue["body"] = issue["description"]
                 return issues
         except Exception as e:
             print(f"[Notice] glab CLI fallback failed: {e}")
@@ -999,6 +1034,10 @@ class JiraV2V3Provider:
                 raw_err = e.read().decode("utf-8", errors="ignore") if e.fp else ""
 
                 if status_code in (429, 502, 503, 504) and attempt < self.max_retries:
+                    try:
+                        e.close()
+                    except Exception:
+                        pass
                     retry_after = error_headers.get("Retry-After") or error_headers.get("retry-after")
                     if retry_after:
                         try:
@@ -1010,6 +1049,10 @@ class JiraV2V3Provider:
                     time.sleep(sleep_time)
                     continue
 
+                try:
+                    e.close()
+                except Exception:
+                    pass
                 raise RuntimeError(
                     f"Jira API HTTP {status_code} Error on {method} {url}: {raw_err}"
                 ) from e
@@ -1045,6 +1088,17 @@ class JiraV2V3Provider:
         start_at = 0
         max_results = 50
         jql = f"project = '{self.project_key}' ORDER BY key ASC" if self.project_key else "ORDER BY key ASC"
+        consumed_fields = [
+            "summary",
+            "description",
+            "status",
+            "issuetype",
+            "labels",
+            "updated",
+            "created",
+            "issuelinks",
+            "parent",
+        ]
         endpoint = "rest/api/2/search"
 
         try:
@@ -1054,7 +1108,7 @@ class JiraV2V3Provider:
                     "jql": jql,
                     "startAt": start_at,
                     "maxResults": max_results,
-                    "fields": "*all",
+                    "fields": ",".join(consumed_fields),
                 }
                 status_code, data, headers = self._api_request(endpoint, method="GET", params=params)
                 if not isinstance(data, dict):
@@ -1454,8 +1508,8 @@ class GitHubCLIProvider:
         temp_path = None
         try:
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".md", delete=False) as tf:
-                tf.write(description)
                 temp_path = tf.name
+                tf.write(description)
             cmd = [str(issue_num) if c == "{number}" else (temp_path if c == "{temp_path}" else c) for c in edit_cmd_template]
             res = subprocess.run(cmd, cwd=self.workspace_dir, check=True, capture_output=True, timeout=30)
             return res.returncode == 0
@@ -1509,16 +1563,31 @@ def create_tracker_provider(
     offline: bool = False,
     cli_gitlab_url: Optional[str] = None,
     cli_project: Optional[str] = None,
+    cli_gitlab_group: Optional[str] = None,
+    cli_token: Optional[str] = None,
     cli_jira_url: Optional[str] = None,
     cli_jira_project: Optional[str] = None,
     cli_jira_email: Optional[str] = None,
 ):
     if provider_name == "gitlab":
         server_url = cli_gitlab_url or (rules.get("tracker_rules", {}).get("server_url") if rules else None)
-        project_id = cli_project or (rules.get("tracker_rules", {}).get("project_id") if rules else None)
+        raw_project = cli_project or (rules.get("tracker_rules", {}).get("project_id") if rules else None) or (rules.get("tracker_rules", {}).get("project") if rules else None)
+        raw_group = cli_gitlab_group or (rules.get("tracker_rules", {}).get("gitlab_group") if rules else None) or (rules.get("tracker_rules", {}).get("group") if rules else None)
+
+        if raw_group and raw_project and "/" not in str(raw_project):
+            project_id = f"{str(raw_group).rstrip('/')}/{str(raw_project).lstrip('/')}"
+        elif raw_project:
+            project_id = str(raw_project)
+        elif raw_group:
+            project_id = str(raw_group)
+        else:
+            project_id = None
+
+        token = cli_token or (rules.get("tracker_rules", {}).get("token") if rules else None)
         return GitLabV4Provider(
             server_url=server_url,
             project_id=project_id,
+            token=token,
             offline=offline,
             workspace_dir=workspace_dir,
         )
@@ -1526,10 +1595,12 @@ def create_tracker_provider(
         server_url = cli_jira_url or (rules.get("tracker_rules", {}).get("server_url") if rules else None)
         project_key = cli_jira_project or (rules.get("tracker_rules", {}).get("project_key") if rules else None) or (rules.get("tracker_rules", {}).get("project") if rules else None)
         email = cli_jira_email or (rules.get("tracker_rules", {}).get("email") if rules else None)
+        token = cli_token or (rules.get("tracker_rules", {}).get("token") if rules else None)
         return JiraV2V3Provider(
             server_url=server_url,
             project_key=project_key,
             email=email,
+            token=token,
             offline=offline,
             workspace_dir=workspace_dir,
         )
@@ -1762,7 +1833,7 @@ SPEC_TYPE_ALIASES = {
 
 # A type word only marks a type when a separator, a digit or the end of the reference
 # follows it. Without that boundary `us` would claim "User Access Control" and `uc`
-# would claim "UCS Migration" — the same over-eager prefix stripping that produced #319
+# would claim "UCS Migration" -- the same over-eager prefix stripping that produced #319
 # in the first place, reintroduced in the code meant to contain it.
 _REFERENCE_TYPE_RE = re.compile(
     r'^\s*["\'#]*\s*'
@@ -1944,7 +2015,11 @@ def update_checklist_in_file(filepath, issue_dict, rules=None):
         content = f.read()
 
     tracker_rules = rules.get("tracker_rules", {}) if rules else {}
-    pattern = tracker_rules.get("dependency_regex", r"(-\s*\[\s*([ xX])\s*\]\s*(#|#\[|\#\s*)?([A-Za-z0-9\-]+))")
+    custom_pattern = tracker_rules.get("dependency_regex")
+    if custom_pattern and custom_pattern != r"(-\s*\[\s*([ xX])\s*\]\s*(#|#\[|\#\s*)?([A-Za-z0-9\-]+))":
+        pattern = custom_pattern
+    else:
+        pattern = r"(-\s*\[\s*([ xX])\s*\]\s*(\[#|#|#\[|\#\s*)?([A-Za-z0-9\-]+))"
     PLACEHOLDER_PATTERN = re.compile(r'^(IssueID|EpicIssueID|StoryIssueID|FeatureIssueID|UseCaseIssueID|StoryID|N/A)\]?$')
     
     updated_content = content
@@ -1979,7 +2054,7 @@ def update_checklist_in_file(filepath, issue_dict, rules=None):
         # 2. Skip unresolved template placeholders
         if isinstance(dep_num_str, str) and PLACEHOLDER_PATTERN.match(dep_num_str):
             ref_str = format_issue_reference(dep_num_str, tracker_rules)
-            print(f"  [Deferred] Unresolved placeholder {ref_str} in {os.path.basename(filepath)} — skipping")
+            print(f"  [Deferred] Unresolved placeholder {ref_str} in {os.path.basename(filepath)} -- skipping")
             has_deps = True
             all_deps_closed = False
             continue
@@ -1989,7 +2064,7 @@ def update_checklist_in_file(filepath, issue_dict, rules=None):
         
         if dep_issue is None:
             ref_str = format_issue_reference(dep_num, tracker_rules)
-            print(f"  [Warning] Dependency {ref_str} not found in tracker for {os.path.basename(filepath)} — skipping item")
+            print(f"  [Warning] Dependency {ref_str} not found in tracker for {os.path.basename(filepath)} -- skipping item")
             all_deps_closed = False
             continue
             
@@ -2178,6 +2253,106 @@ def get_blob_url_base(rules=None, workspace_dir=None, branch=None):
 
         return f"{server_url}/{proj_path}/blob/{branch}"
 
+def get_issue_web_url(issue_id, rules=None, workspace_dir=None):
+    """
+    Generate provider-aware web URL for a given issue ID (#224).
+    GitLab: https://<host>/<group>/<project>/-/issues/<id>
+    GitHub: https://github.com/<org>/<repo>/issues/<id>
+    Jira: https://<host>/browse/<KEY>-<id>
+    """
+    if issue_id is None or str(issue_id).strip() == "" or str(issue_id) == "0":
+        return ""
+
+    issue_id_str = str(issue_id).strip()
+
+    if workspace_dir is None:
+        workspace_dir = find_workspace_dir(os.getcwd())
+
+    upstream_repo = get_upstream_repository(rules, workspace_dir) or "gintatkinson/DEAP01-spec-core"
+    provider_name = detect_tracker_provider(rules=rules, workspace_dir=workspace_dir)
+
+    remote_info = get_git_remote_info(workspace_dir) if workspace_dir else None
+    remote_info = remote_info or {}
+
+    tracker_rules = rules.get("tracker_rules", {}) if rules else {}
+    server_url_override = tracker_rules.get("server_url") or tracker_rules.get("url")
+
+    is_gitlab_remote = remote_info.get("is_gitlab", False)
+    if provider_name == "gitlab" or is_gitlab_remote:
+        server_url = (
+            server_url_override
+            or (remote_info.get("server_url") if is_gitlab_remote else None)
+            or os.environ.get("GITLAB_URL")
+            or os.environ.get("CI_SERVER_URL")
+            or "https://gitlab.com"
+        ).rstrip("/")
+
+        proj_path = (
+            tracker_rules.get("project_id")
+            or remote_info.get("project_path")
+            or os.environ.get("CI_PROJECT_PATH")
+            or upstream_repo
+            or ""
+        ).strip("/")
+
+        if proj_path.startswith("http://") or proj_path.startswith("https://"):
+            parsed_proj = urllib.parse.urlparse(proj_path)
+            server_url = f"{parsed_proj.scheme}://{parsed_proj.netloc}".rstrip("/")
+            proj_path = parsed_proj.path.lstrip("/")
+
+        if proj_path.endswith(".git"):
+            proj_path = proj_path[:-4]
+
+        if proj_path.startswith("github.com/"):
+            proj_path = proj_path[len("github.com/"):]
+        elif proj_path.startswith("gitlab.com/"):
+            proj_path = proj_path[len("gitlab.com/"):]
+
+        return f"{server_url}/{proj_path}/-/issues/{issue_id_str}"
+    elif provider_name == "jira":
+        server_url = (
+            server_url_override
+            or remote_info.get("server_url")
+            or os.environ.get("JIRA_URL")
+            or os.environ.get("JIRA_SERVER_URL")
+            or "https://jira.atlassian.net"
+        ).rstrip("/")
+        issue_key = issue_id_str
+        project_key = tracker_rules.get("project_key") or "PROJ"
+        if "-" not in issue_key and issue_key.isdigit():
+            issue_key = f"{project_key}-{issue_key}"
+        return f"{server_url}/browse/{issue_key}"
+    else:  # github
+        server_url = (
+            server_url_override
+            if (server_url_override and not is_gitlab_remote)
+            else (remote_info.get("server_url") if (remote_info.get("server_url") and not is_gitlab_remote) else "https://github.com")
+        ).rstrip("/")
+
+        proj_path = (
+            tracker_rules.get("project_id")
+            or tracker_rules.get("project_key")
+            or remote_info.get("project_path")
+            or upstream_repo
+            or ""
+        ).strip("/")
+
+        if proj_path.startswith("http://") or proj_path.startswith("https://"):
+            parsed_proj = urllib.parse.urlparse(proj_path)
+            server_url = f"{parsed_proj.scheme}://{parsed_proj.netloc}".rstrip("/")
+            proj_path = parsed_proj.path.lstrip("/")
+
+        if proj_path.endswith(".git"):
+            proj_path = proj_path[:-4]
+
+        if proj_path.startswith("github.com/"):
+            proj_path = proj_path[len("github.com/"):]
+        elif proj_path.startswith("gitlab.com/"):
+            proj_path = proj_path[len("gitlab.com/"):]
+
+        return f"{server_url}/{proj_path}/issues/{issue_id_str}"
+
+
 def rewrite_header_repository_urls(content, active_repo, rules=None, workspace_dir=None):
     if not content or not active_repo:
         return content
@@ -2264,13 +2439,14 @@ def sanitize_source_references(content, workspace_dir=None, rules=None):
     pattern = r'file://(/[^\s\)\>"\']+)'
     return re.sub(pattern, replacer, content)
 
-def expand_relative_links_for_tracker(content, filepath=None, rules=None, workspace_dir=None, branch=None):
-    """Expand relative markdown links to full blob URLs for web issue tracker payloads.
+def expand_relative_links_for_tracker(content, filepath=None, rules=None, workspace_dir=None, branch=None, known_issue_ids=None):
+    """Expand relative markdown links to full blob URLs and task list issue references to explicit hyperlinks.
     
     Local git files maintain clean, canonical relative links for branch isolation
     and offline navigation. During tracker dispatch, this transforms relative file links
     into provider-aware web blob URLs (e.g. GitHub /blob/<branch>/... or GitLab /-/blob/<branch>/...)
-    so links resolve correctly when viewed in issue tracker web interfaces (#45).
+    and task list issue references into explicit hyperlinks ([#123](<url>)) (#45, #224)
+    with dead link and unregistered reference guards (#222).
     """
     if not content:
         return content
@@ -2344,11 +2520,45 @@ def expand_relative_links_for_tracker(content, filepath=None, rules=None, worksp
             return match.group(0)
 
         norm_target = norm_target.lstrip("./").lstrip("/")
+
+        # Dead Link Guard (#222): verify file exists in workspace before expanding to remote blob URL
+        if abs_workspace:
+            target_full_path = os.path.join(abs_workspace, norm_target)
+            if not os.path.exists(target_full_path):
+                print(f"  [Warning] Target file '{norm_target}' not found in workspace for link '[{label}]({target})' -- retaining relative link", file=sys.stderr)
+                return match.group(0)
+
         blob_url = f"{blob_base.rstrip('/')}/{norm_target}{fragment}"
         return f"[{label}]({blob_url})"
 
     pattern = r'\[([^\]]+)\]\(([^)]+)\)'
-    return re.sub(r'\[([^\]]+)\]\(([^)]+)\)', replace_link, content)
+    content = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', replace_link, content)
+
+    # Explicit Issue Hyperlinks in Task Lists (#224) & Unregistered Reference Guard (#222)
+    tracker_rules = rules.get("tracker_rules", {}) if rules else {}
+    placeholder = tracker_rules.get("issue_id_placeholder", "#[IssueID]")
+
+    def replace_task_list_issue_ref(match):
+        indent = match.group("indent")
+        issue_id_str = match.group("id")
+        rest = match.group("rest")
+        
+        issue_num = int(issue_id_str) if issue_id_str.isdigit() else issue_id_str
+        if known_issue_ids is not None:
+            if issue_num not in known_issue_ids and issue_id_str not in known_issue_ids:
+                print(f"  [Warning] Unregistered issue reference #{issue_id_str} not found in tracker registry -- reverting to placeholder {placeholder}", file=sys.stderr)
+                return f"{indent}{placeholder}{rest}"
+
+        issue_url = get_issue_web_url(issue_num, rules=rules, workspace_dir=workspace_dir)
+        if issue_url:
+            return f"{indent}[#{issue_id_str}]({issue_url}){rest}"
+        return match.group(0)
+
+    task_list_pattern = r'^(?P<indent>\s*-\s*\[[ xX]\]\s*)#(?P<id>\d+)(?P<rest>(?:[^\d].*|\s*)$)'
+    content = re.sub(task_list_pattern, replace_task_list_issue_ref, content, flags=re.MULTILINE)
+
+    return content
+
 
 
 def sanitize_mermaid_diagrams(content):
@@ -2445,8 +2655,8 @@ def structural_label_key(issue_type):
     """Reduce an item type ("User Story") to its `tracker_rules.labels` key.
 
     The four spec loops name their type in prose; the configuration keys it in snake
-    case. Deriving one from the other keeps the taxonomy in a single place — the
-    configuration — instead of restating it at four call sites.
+    case. Deriving one from the other keeps the taxonomy in a single place -- the
+    configuration -- instead of restating it at four call sites.
     """
     return re.sub(r"[\s\-]+", "_", str(issue_type or "").strip().lower())
 
@@ -2473,11 +2683,102 @@ def get_structural_label(issue_type, rules=None):
     return DEFAULT_STRUCTURAL_LABELS.get(key)
 
 
+def get_type_for_structural_label(label, rules=None):
+    """Identify which structural spec type a label represents, or None if non-structural (#221).
+
+    Checks configured tracker_rules.labels, provider defaults, and canonical aliases.
+    """
+    if not label:
+        return None
+    norm = normalize_label(label)
+    if not norm:
+        return None
+
+    tracker_rules = rules.get("tracker_rules", {}) if rules else {}
+    configured_labels = tracker_rules.get("labels", {})
+
+    # Check configured labels first
+    for key in ("epic", "feature", "user_story", "use_case"):
+        cfg = configured_labels.get(key)
+        if cfg and normalize_label(cfg) == norm:
+            return key
+
+    # Check known provider defaults and aliases
+    type_label_map = {
+        "epic": {
+            "epic", "epics", "type::epic", "type:epic", "type::epics", "type:epics",
+            normalize_label(DEFAULT_STRUCTURAL_LABELS.get("epic")),
+            normalize_label(DEFAULT_GITLAB_STRUCTURAL_LABELS.get("epic")),
+            normalize_label(DEFAULT_JIRA_STRUCTURAL_LABELS.get("epic")),
+        },
+        "feature": {
+            "feature", "features", "feat", "type::feature", "type:feature", "type::features",
+            "type:features", "type::feat", "type:feat",
+            normalize_label(DEFAULT_STRUCTURAL_LABELS.get("feature")),
+            normalize_label(DEFAULT_GITLAB_STRUCTURAL_LABELS.get("feature")),
+            normalize_label(DEFAULT_JIRA_STRUCTURAL_LABELS.get("feature")),
+        },
+        "user_story": {
+            "user-story", "user-stories", "us", "type::user-story", "type:user-story",
+            "type::user-stories", "type:user-stories", "type::us", "type:us",
+            normalize_label(DEFAULT_STRUCTURAL_LABELS.get("user_story")),
+            normalize_label(DEFAULT_GITLAB_STRUCTURAL_LABELS.get("user_story")),
+            normalize_label(DEFAULT_JIRA_STRUCTURAL_LABELS.get("user_story")),
+        },
+        "use_case": {
+            "use-case", "use-cases", "uc", "type::use-case", "type:use-case",
+            "type::use-cases", "type:use-cases", "type::uc", "type:uc",
+            normalize_label(DEFAULT_STRUCTURAL_LABELS.get("use_case")),
+            normalize_label(DEFAULT_GITLAB_STRUCTURAL_LABELS.get("use_case")),
+            normalize_label(DEFAULT_JIRA_STRUCTURAL_LABELS.get("use_case")),
+        },
+    }
+
+    for key, label_set in type_label_map.items():
+        clean_set = {normalize_label(s) for s in label_set if s}
+        if norm in clean_set:
+            return key
+
+    return None
+
+
+def is_issue_type_compatible(issue_record, expected_type, rules=None):
+    """Detect when a remote issue carries conflicting structural labels (#221).
+
+    Returns False if the remote issue carries any structural label for a spec type
+    other than expected_type (e.g. carries 'type::feature' or 'feature' when expecting 'Epic').
+    Returns True if no conflicting structural labels are present.
+    """
+    if not issue_record or not isinstance(issue_record, dict):
+        return True
+    exp_key = structural_label_key(expected_type)
+    if exp_key in ("user-story", "user_stories"):
+        exp_key = "user_story"
+    elif exp_key in ("use-case", "use_cases"):
+        exp_key = "use_case"
+
+    tracker_rules = rules.get("tracker_rules", {}) if rules else {}
+    keys = tracker_rules.get("keys", {})
+    labels_key = keys.get("labels", "labels")
+
+    raw_labels = issue_record.get(labels_key)
+    if raw_labels is None:
+        raw_labels = issue_record.get("labels", [])
+
+    for item in raw_labels or []:
+        name = item.get("name", "") if isinstance(item, dict) else str(item)
+        found_type = get_type_for_structural_label(name, rules)
+        if found_type and found_type != exp_key:
+            return False
+
+    return True
+
+
 def issue_has_label(issue_record, label):
     """Does this tracker record already carry `label`?
 
     Tracker payloads express labels either as objects with a "name" or as bare strings,
-    so both are accepted — the same shapes `is_already_resolved` handles.
+    so both are accepted -- the same shapes `is_already_resolved` handles.
 
     Comparison folds case and word separators through `normalize_label` (#329). It was
     exact when #313 added this function, which meant an issue already carrying
@@ -2519,6 +2820,20 @@ def sync_issue_title_to_tracker(issue_num, filepath, rules=None, issue_record=No
     if current_title is not None and str(current_title) == title:
         return False
 
+    if not provider_adapter:
+        provider = tracker_rules.get("provider", "github")
+        if provider == "gitlab":
+            provider_adapter = GitLabV4Provider(
+                server_url=tracker_rules.get("server_url"),
+                project_id=tracker_rules.get("project_id"),
+            )
+        elif provider == "jira":
+            provider_adapter = JiraV2V3Provider(
+                server_url=tracker_rules.get("server_url"),
+                project_key=tracker_rules.get("project_key") or tracker_rules.get("project"),
+                email=tracker_rules.get("email"),
+            )
+
     if provider_adapter:
         return provider_adapter.edit_issue_title(issue_num, title)
 
@@ -2543,8 +2858,8 @@ def sync_issue_title_to_tracker(issue_num, filepath, rules=None, issue_record=No
 def apply_structural_label(issue_num, issue_type, rules=None, issue_record=None, provider_adapter=None):
     """Apply the configured structural label for this item type (#313).
 
-    Bootstrapping reuses the `create_label` command #309 added — `--force` makes it a
-    no-op where the label already exists — because a fresh downstream repository has no
+    Bootstrapping reuses the `create_label` command #309 added -- `--force` makes it a
+    no-op where the label already exists -- because a fresh downstream repository has no
     such label and applying one that does not exist fails the sync. This is the same
     just-in-time provisioning #309 established; making it install-time is issue #323 and
     is not attempted here.
@@ -2568,6 +2883,20 @@ def apply_structural_label(issue_num, issue_type, rules=None, issue_record=None,
         return False
 
     description = STRUCTURAL_LABEL_DESCRIPTION_TEMPLATE.format(item_type=issue_type)
+
+    if not provider_adapter:
+        provider = tracker_rules.get("provider", "github")
+        if provider == "gitlab":
+            provider_adapter = GitLabV4Provider(
+                server_url=tracker_rules.get("server_url"),
+                project_id=tracker_rules.get("project_id"),
+            )
+        elif provider == "jira":
+            provider_adapter = JiraV2V3Provider(
+                server_url=tracker_rules.get("server_url"),
+                project_key=tracker_rules.get("project_key") or tracker_rules.get("project"),
+                email=tracker_rules.get("email"),
+            )
 
     if provider_adapter:
         provider_adapter.create_label(label, description=description, color="#0E8A16")
@@ -2605,11 +2934,11 @@ def apply_structural_label(issue_num, issue_type, rules=None, issue_record=None,
 
 
 def sync_issue_body_to_tracker(issue_num, filepath, issue_type="Feature", rules=None,
-                               issue_record=None, provider_adapter=None):
+                               issue_record=None, provider_adapter=None, known_issue_ids=None):
     """Push the specification to its tracker issue: body, title (#315) and label (#313).
 
     `issue_record` is the tracker's own payload for this issue, when the caller has it.
-    It is what makes the two additions conditional rather than unconditional — the title
+    It is what makes the two additions conditional rather than unconditional -- the title
     is only re-sent when it differs, and the label only applied when it is absent.
     """
     tracker_rules = rules.get("tracker_rules", {}) if rules else {}
@@ -2621,7 +2950,7 @@ def sync_issue_body_to_tracker(issue_num, filepath, issue_type="Feature", rules=
         
     workspace_dir = find_workspace_dir(filepath)
     content = sanitize_source_references(content, workspace_dir=workspace_dir, rules=rules)
-    content = expand_relative_links_for_tracker(content, filepath=filepath, rules=rules, workspace_dir=workspace_dir)
+    content = expand_relative_links_for_tracker(content, filepath=filepath, rules=rules, workspace_dir=workspace_dir, known_issue_ids=known_issue_ids)
     content = sanitize_latex_delimiters_for_tracker(content)
     content = sanitize_mermaid_diagrams(content)
     content = convert_frontmatter_to_table(content)
@@ -2657,14 +2986,28 @@ def sync_issue_body_to_tracker(issue_num, filepath, issue_type="Feature", rules=
         else:
             content = content[:trunc_limit] + truncation_template
         
+    if not provider_adapter:
+        provider = tracker_rules.get("provider", "github")
+        if provider == "gitlab":
+            provider_adapter = GitLabV4Provider(
+                server_url=tracker_rules.get("server_url"),
+                project_id=tracker_rules.get("project_id"),
+            )
+        elif provider == "jira":
+            provider_adapter = JiraV2V3Provider(
+                server_url=tracker_rules.get("server_url"),
+                project_key=tracker_rules.get("project_key") or tracker_rules.get("project"),
+                email=tracker_rules.get("email"),
+            )
+
     if provider_adapter:
         provider_adapter.edit_issue(issue_num, content)
     else:
         temp_path = None
         try:
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".md", delete=False) as tf:
-                tf.write(content)
                 temp_path = tf.name
+                tf.write(content)
             
             edit_cmd_template = tracker_rules.get("commands", {}).get("edit_issue")
             if not edit_cmd_template:
@@ -2727,6 +3070,20 @@ def resolve_issue_on_tracker(issue_num, comment, rules=None, provider_adapter=No
     label = get_resolved_label(rules)
     ref_str = format_issue_reference(issue_num, tracker_rules)
     print(f"  [Resolve Issue] Marking {ref_str} Fixed / Resolved via label '{label}'...")
+
+    if not provider_adapter:
+        provider = tracker_rules.get("provider", "github")
+        if provider == "gitlab":
+            provider_adapter = GitLabV4Provider(
+                server_url=tracker_rules.get("server_url"),
+                project_id=tracker_rules.get("project_id"),
+            )
+        elif provider == "jira":
+            provider_adapter = JiraV2V3Provider(
+                server_url=tracker_rules.get("server_url"),
+                project_key=tracker_rules.get("project_key") or tracker_rules.get("project"),
+                email=tracker_rules.get("email"),
+            )
 
     if provider_adapter:
         provider_adapter.create_label(label, description=RESOLVED_LABEL_DESCRIPTION, color="#0E8A16")
@@ -3170,7 +3527,7 @@ def blocked_specs_from_linter_output(output_text, workspace_dir, rules=None):
     """Specification files the linter rejected, from its output.
 
     Intersected with the files that actually exist in the backlog directories. A bare
-    regex over the output also catches documents merely *cited* by a finding — a
+    regex over the output also catches documents merely *cited* by a finding -- a
     remediation note reading "see rules/document-references.md" made the reconciler
     skip the constitution, which it had never been asked to validate. Only items the
     linter genuinely rejected belong in the skip set (#321).
@@ -3343,7 +3700,7 @@ def extract_metadata(filepath):
 def lookup_canonical_issue_key(raw_id, issue_dict):
     """Return the key under which `raw_id` sits in `issue_dict`, or None if absent.
 
-    `issue_dict` is keyed twice per issue — once int, once str — because tracker
+    `issue_dict` is keyed twice per issue -- once int, once str -- because tracker
     payloads and frontmatter disagree about the type. Frontmatter may also quote the
     value or write it as a reference (`"901"`, `#901`), so all three spellings are
     reduced to the one key the caller can index with.
@@ -3363,6 +3720,53 @@ def lookup_canonical_issue_key(raw_id, issue_dict):
     return None
 
 
+def is_placeholder_issue_id(val: Any) -> bool:
+    """Check whether a declared issue_id value is a pre-registration placeholder token.
+    
+    Recognizes placeholders such as `#[IssueID]`, `[IssueID]`, `IssueID`, `#TBD`,
+    `TBD`, `Pending Registration...`, `Pending (pre-registration draft)`, `[Draft]`,
+    `#[EpicIssueID]`, `[StoryIssueID]`, `[FeatureIssueID]`, `[UseCaseIssueID]`,
+    `[POPULATE: Issue ID]`, `TODO`, `N/A`, etc.
+    """
+    if val is None or isinstance(val, (int, float, bool)):
+        return False
+    s = str(val).strip().strip('"\'')
+    if not s:
+        return False
+
+    # Pure digits or #digits (e.g. 42 or #42) are real issue numbers, not placeholders
+    clean_digits = s.lstrip("#").strip()
+    if clean_digits.isdigit():
+        return False
+
+    # Match spec slug placeholders such as #us-11, #US-03, #uc-06, #UC-09, #feat-12, #epic-01, #wp-01, etc.
+    if re.match(r'^#?(?:us|uc|feat|epic|wp)[-_]\d+', s, re.IGNORECASE):
+        return True
+
+    # Match bracketed tokens like #[IssueID], [IssueID], #[EpicIssueID], [TBD], [Draft], etc.
+    if re.match(r'^#?\[[a-zA-Z0-9_\s:\-]+\]$', s):
+        inner = re.sub(r'^#?\[(.*)\]$', r'\1', s).strip()
+        if not inner.lstrip("#").isdigit():
+            return True
+
+    # Match specific placeholder keywords
+    placeholder_token_pattern = re.compile(
+        r'^#?\[?(?:issueid|epicid|featureid|storyid|usecaseid|'
+        r'epicissueid|featureissueid|storyissueid|usecaseissueid|'
+        r'tbd|todo|n/?a|draft|placeholder|populate)\]?$',
+        re.IGNORECASE,
+    )
+    if placeholder_token_pattern.match(s):
+        return True
+
+    # Descriptive placeholder phrases (e.g. 'Pending Registration...', 'Pending (pre-registration draft)')
+    lower_s = s.lower()
+    if any(kw in lower_s for kw in ("pending", "pre-registration", "preregistration", "populate:", "placeholder", "to be determined")):
+        return True
+
+    return False
+
+
 def resolve_spec_issue_number(filepath, title, title_map, issue_dict, rules=None,
                               item_type="Feature", claimed=None):
     """Resolve a local spec file to its tracker issue. Canonical `issue_id` first.
@@ -3375,13 +3779,22 @@ def resolve_spec_issue_number(filepath, title, title_map, issue_dict, rules=None
 
     Order:
 
-    1. Frontmatter `issue_id` present and on the tracker — used, full stop.
-    2. Frontmatter `issue_id` present but absent from the tracker — **hard error**. A
+    1. Frontmatter `issue_id` present and on the tracker:
+       - Check if the remote issue's type is compatible AND its normalized title matches
+         the local document.
+       - If compatible and title matches: return candidate_num.
+       - If a collision is detected (type mismatch or title mismatch):
+         * Attempt to auto-reconcile to the true remote issue via normalized title
+           lookup (title_map.get(norm_local_title)). If found, emit a notice and return
+           the matched ID (#221).
+         * If no title match exists in title_map, FAIL CLOSED with an explicit [FATAL]
+           error explaining the collision (#221) and refuse to overwrite the remote tracker issue.
+    2. Frontmatter `issue_id` present but absent from the tracker -- **hard error**. A
        fall-through to title matching here is exactly #316: the title can match some
        unrelated issue, and `sync_issue_body_to_tracker` would then overwrite that
        issue's body. It is also the same class of defect as the referenced-but-missing
        issue the module already refuses to invent.
-    3. No `issue_id` yet (first registration) — title normalization, with a warning
+    3. No `issue_id` yet (first registration or placeholder) -- title normalization, with a warning
        naming the file, because the constitution allows it only as a fallback.
 
     `claimed` is an optional dict shared across all four loops. Two spec files
@@ -3392,13 +3805,20 @@ def resolve_spec_issue_number(filepath, title, title_map, issue_dict, rules=None
     meta = extract_metadata(filepath)
     fm_id = meta.get("issue_id")
     basename = os.path.basename(filepath)
+    keys = tracker_rules.get("keys", {})
+    title_key = keys.get("title", "title")
 
-    declared = str(fm_id).strip().strip('"\'').lstrip("#").strip() if fm_id is not None else ""
+    if is_placeholder_issue_id(fm_id):
+        declared = ""
+    else:
+        declared = str(fm_id).strip().strip('"\'').lstrip("#").strip() if fm_id is not None else ""
+        if is_placeholder_issue_id(declared):
+            declared = ""
 
     issue_num = None
     if declared:
-        issue_num = lookup_canonical_issue_key(fm_id, issue_dict)
-        if issue_num is None:
+        candidate_num = lookup_canonical_issue_key(fm_id, issue_dict) if issue_dict else None
+        if candidate_num is None:
             declared_ref = format_issue_reference(declared, tracker_rules)
             print(
                 f"[FATAL] {item_type} '{basename}' declares issue_id {declared_ref}, "
@@ -3408,7 +3828,54 @@ def resolve_spec_issue_number(filepath, title, title_map, issue_dict, rules=None
                 file=sys.stderr,
             )
             sys.exit(1)
+
+        candidate_record = issue_dict.get(candidate_num) or {}
+        candidate_title = candidate_record.get(title_key, "")
+        norm_remote_title = normalize_title(candidate_title, rules)
+        norm_local_title = normalize_title(title, rules)
+        type_compatible = is_issue_type_compatible(candidate_record, item_type, rules)
+        title_matches = (norm_remote_title == norm_local_title) and bool(norm_local_title)
+
+        if type_compatible and title_matches:
+            issue_num = candidate_num
+        else:
+            # Collision detected (#221): declared issue_id points to an issue with mismatched type or mismatched title.
+            # Attempt to auto-reconcile to the true remote issue via normalized title lookup.
+            matched_id = title_map.get(norm_local_title) if norm_local_title else None
+            if matched_id is not None:
+                candidate_ref = format_issue_reference(candidate_num, tracker_rules)
+                matched_ref = format_issue_reference(matched_id, tracker_rules)
+                reasons = []
+                if not type_compatible:
+                    reasons.append(f"incompatible spec type for {item_type}")
+                if not title_matches:
+                    reasons.append(f"title mismatch (tracker '{candidate_title}' vs local '{title}')")
+                reason_str = "; ".join(reasons) if reasons else "type or title mismatch"
+                print(
+                    f"  [Notice] {item_type} '{basename}' declared issue_id {candidate_ref}, "
+                    f"which collided with tracker issue {candidate_ref} ({reason_str}). "
+                    f"Auto-reconciled to true tracker issue {matched_ref} via normalized title match (#221)."
+                )
+                issue_num = matched_id
+            else:
+                candidate_ref = format_issue_reference(candidate_num, tracker_rules)
+                reasons = []
+                if not type_compatible:
+                    reasons.append(f"incompatible spec type for {item_type}")
+                if not title_matches:
+                    reasons.append(f"title mismatch (tracker '{candidate_title}' vs local '{title}')")
+                reason_str = "; ".join(reasons) if reasons else "type or title mismatch"
+                print(
+                    f"[FATAL] {item_type} '{basename}' declares issue_id {candidate_ref}, "
+                    f"which collides with tracker issue {candidate_ref} ({reason_str}), "
+                    f"and no matching {item_type} was found on the tracker (#221). "
+                    f"Refusing to overwrite tracker issue {candidate_ref}. Correct the issue_id in {filepath}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
     else:
+        if not issue_dict:
+            return None
         issue_num = title_map.get(normalize_title(title, rules))
         if issue_num is not None:
             print(
@@ -3416,7 +3883,7 @@ def resolve_spec_issue_number(filepath, title, title_map, issue_dict, rules=None
                 f"frontmatter; fell back to matching by normalized title and resolved "
                 f"{format_issue_reference(issue_num, tracker_rules)}. "
                 ".pipeline/constitution.md:58-59 prohibits title normalization as a "
-                f"primary selector — add 'issue_id: {issue_num}' to {filepath}"
+                f"primary selector -- add 'issue_id: {issue_num}' to {filepath}"
             )
 
     if issue_num is None:
@@ -3442,15 +3909,15 @@ def resolve_spec_issue_number(filepath, title, title_map, issue_dict, rules=None
 def build_epic_alias_map(epics_dir, rules=None):
     """Every spelling an Epic can be referenced by -> that Epic's canonical normalized title.
 
-    The map resolves *cross-references between items* — the `epic:` frontmatter key and
-    the parent-epic link in a body — so that a child ends up in the right Epic's
+    The map resolves *cross-references between items* -- the `epic:` frontmatter key and
+    the parent-epic link in a body -- so that a child ends up in the right Epic's
     checklist. It has never resolved a file's own identity, and after #314/#316 it must
     not: `resolve_spec_issue_number` is the sole authority there, and an alias that
     claimed a Feature's slug would assert an identity the resolver never granted.
 
     Aliases are deliberately generous, including type-erased ones: an Epic titled
     "Epic 07: Geo Location" is reachable as `geo location`, because children routinely
-    name their parent by bare title. #319 is what that generosity cost — `feat-07-geo-
+    name their parent by bare title. #319 is what that generosity cost -- `feat-07-geo-
     location` normalizes to `geo location` too, so a Feature-typed reference resolved to
     the Epic. The gate for that is at *lookup* time in `resolve_epic_reference`, on the
     type the reference declares about itself, rather than by deleting the alias: deleting
@@ -3458,7 +3925,7 @@ def build_epic_alias_map(epics_dir, rules=None):
 
     What is enforced here is the other half of the collision. An alias claimed by two
     Epics with different canonical titles is dropped rather than kept, because keeping it
-    resolves by `os.listdir` order — a filesystem accident, not a resolution rule.
+    resolves by `os.listdir` order -- a filesystem accident, not a resolution rule.
     """
     alias_map = {}
     ambiguous = set()
@@ -3527,7 +3994,7 @@ def resolve_epic_reference(epic_ref, epic_alias_map, epic_id_to_norm, rules=None
     Order: issue number first, then the alias map, then bare normalization.
 
     The namespace gate for #319 sits between those last two. A reference that names its
-    own type — `feat-07-geo-location`, `us-03-operator`, `uc-04-device-state` — is not an
+    own type -- `feat-07-geo-location`, `us-03-operator`, `uc-04-device-state` -- is not an
     Epic reference, so the alias map is not consulted for it and no epic is returned.
     Falling through to `normalize_title` instead would not be enough: the whole point of
     the collision is that a Feature and an Epic sharing a suffix normalize to the same
@@ -3547,6 +4014,62 @@ def resolve_epic_reference(epic_ref, epic_alias_map, epic_id_to_norm, rules=None
         ref_str = str(epic_ref)
     else:
         ref_str = str(epic_ref).strip().strip('"\'')
+
+    # Parse Markdown link syntax: [Link Text](path)
+    link_match = re.search(r'\[([^\]]+)\]\(([^)]+)\)', ref_str)
+    if link_match:
+        link_text = link_match.group(1).strip()
+        link_url = link_match.group(2).strip()
+
+        # 1. Check issue ID from link_text if present against epic_id_to_norm
+        issue_id_match = re.search(r'#?(\d+)\b', link_text)
+        if issue_id_match:
+            cand_id = issue_id_match.group(1)
+            if cand_id in epic_id_to_norm:
+                return epic_id_to_norm[cand_id]
+            if int(cand_id) in epic_id_to_norm:
+                return epic_id_to_norm[int(cand_id)]
+
+        # 2. Extract filename slug from link_url (stripping .md) and check against epic_alias_map
+        url_clean = link_url.split('#')[0].split('?')[0].strip()
+        url_fn = os.path.basename(url_clean)
+        if url_fn.endswith('.md'):
+            url_fn = url_fn[:-3]
+        url_slug = url_fn.strip()
+        if url_slug:
+            if url_slug.lower() in epic_alias_map:
+                return epic_alias_map[url_slug.lower()]
+            norm_slug = normalize_title(url_slug, rules)
+            if norm_slug in epic_alias_map:
+                return epic_alias_map[norm_slug]
+            slug_space = url_slug.lower().replace("-", " ")
+            if slug_space in epic_alias_map:
+                return epic_alias_map[slug_space]
+
+        # 3. Use link_text (and cleaned title without leading issue numbers) for alias matching
+        if link_text:
+            if link_text.lower() in epic_alias_map:
+                return epic_alias_map[link_text.lower()]
+            norm_text = normalize_title(link_text, rules)
+            if norm_text in epic_alias_map:
+                return epic_alias_map[norm_text]
+            text_space = link_text.lower().replace("-", " ")
+            if text_space in epic_alias_map:
+                return epic_alias_map[text_space]
+
+            cleaned_title = re.sub(r'^(?:epic\s*)?#?\d+\s*[-:]?\s*', '', link_text, flags=re.IGNORECASE).strip()
+            if cleaned_title:
+                if cleaned_title.lower() in epic_alias_map:
+                    return epic_alias_map[cleaned_title.lower()]
+                norm_clean = normalize_title(cleaned_title, rules)
+                if norm_clean in epic_alias_map:
+                    return epic_alias_map[norm_clean]
+                clean_space = cleaned_title.lower().replace("-", " ")
+                if clean_space in epic_alias_map:
+                    return epic_alias_map[clean_space]
+                ref_str = cleaned_title
+            else:
+                ref_str = link_text
 
     clean_ref = ref_str
     if clean_ref.startswith('#'):
@@ -3659,13 +4182,16 @@ def resolve_issue_ids_in_file(filepath, epic_titles, feature_titles, story_title
         link_label_match = re.search(r'\[([^\]]+)\]\(', line)
         if link_label_match:
             title = link_label_match.group(1).strip()
+            title = re.sub(r'\s*\([^\)]*\.md\)', '', title, flags=re.IGNORECASE).strip()
+            title = re.sub(r'\s*\((?:feat|epic|us|uc|wp)[-_][^\)]*\)', '', title, flags=re.IGNORECASE).strip()
+            title = title.strip('[]-* `"\':;,')
         else:
             pattern = escaped_active + r'(?:\s*[-:]\s*)?' + title_extraction_prefixes_regex + r'(.*)$'
             dash_match = re.search(pattern, line)
             if dash_match:
                 title = dash_match.group(1).strip()
                 title = re.sub(r'\(.*?\)', '', title).strip()
-                title = title.strip('[]-* ')
+                title = title.strip('[]-* `"\':;,')
                 
         if (not title or not title.strip()) and re.search(r'issue[\s\-_]*id\s*:', line, re.IGNORECASE):
             title = extract_title(filepath)
@@ -3804,7 +4330,13 @@ def reconcile_epic_checklists(filepath, child_features, child_stories, child_use
     
     def format_item(item_type, filename, title, issue_num):
         tracker_rules = rules.get("tracker_rules", {}) if rules else {}
-        ref_str = format_issue_reference(issue_num, tracker_rules) if (issue_num and issue_num != 0) else tracker_rules.get("issue_id_placeholder", "#[IssueID]")
+        if issue_num and issue_num != 0:
+            ref_str = format_issue_reference(issue_num, tracker_rules)
+            issue_url = get_issue_web_url(issue_num, rules=rules, workspace_dir=workspace_root)
+            if issue_url:
+                ref_str = f"[{ref_str}]({issue_url})"
+        else:
+            ref_str = tracker_rules.get("issue_id_placeholder", "#[IssueID]")
         
         if item_type == "feature":
             path_part = f"docs/features/{filename}.md"
@@ -3824,26 +4356,31 @@ def reconcile_epic_checklists(filepath, child_features, child_stories, child_use
     def sanitize_existing_item(item, title_map, child_list):
         tracker_rules = rules.get("tracker_rules", {}) if rules else {}
         placeholder = tracker_rules.get("issue_id_placeholder", "#[IssueID]")
-        if "#0" in item or "#[" in item:
-            title = None
-            m_title = re.search(r'\[([^\]]+)\]\(', item)
-            if m_title:
-                title = m_title.group(1)
-            else:
-                key = get_filename_key(item)
-                if key and child_list:
-                    for fn, t in child_list:
-                        if fn == key:
-                            title = t
-                            break
-            issue_num = None
-            if title:
-                issue_num = title_map.get(normalize_title(title, rules))
-            if issue_num and issue_num != 0:
-                ref_str = format_issue_reference(issue_num, tracker_rules)
-                item = re.sub(r'#0\b|#\[(?:IssueID|FeatureIssueID|UseCaseIssueID|StoryIssueID)\]', ref_str, item)
-            else:
-                item = re.sub(r'#0\b', placeholder, item)
+        title = None
+        m_title = re.search(r'\[([^\]]+)\]\(', item)
+        if m_title:
+            title = m_title.group(1)
+        else:
+            key = get_filename_key(item)
+            if key and child_list:
+                for fn, t in child_list:
+                    if fn == key:
+                        title = t
+                        break
+        issue_num = None
+        if title:
+            issue_num = title_map.get(normalize_title(title, rules))
+        if issue_num and issue_num != 0:
+            ref_str = format_issue_reference(issue_num, tracker_rules)
+            issue_url = get_issue_web_url(issue_num, rules=rules, workspace_dir=workspace_root)
+            if issue_url:
+                ref_str = f"[{ref_str}]({issue_url})"
+            item = re.sub(r'#0\b|#\[(?:IssueID|FeatureIssueID|UseCaseIssueID|StoryIssueID)\]|\[?#\d+\]?(?:\([^)]+\))?', ref_str, item, count=1)
+        else:
+            # Sibling is not registered on tracker yet (#223, #222)
+            # Revert any assumed #0 or #N or placeholder to canonical placeholder
+            if "#0" in item or "#[" in item or re.search(r'-\s*\[[ xX]\]\s*\[?#\d+\]?', item):
+                item = re.sub(r'#0\b|#\[(?:IssueID|FeatureIssueID|UseCaseIssueID|StoryIssueID)\]|\[?#\d+\]?(?:\([^)]+\))?', placeholder, item, count=1)
         return item
 
     final_features = []
@@ -4014,6 +4551,14 @@ def assert_no_mock_cli(workspace_dir=None):
                 sys.exit(1)
 
 def main():
+    import subprocess
+    verify_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "verify_downstream_baseline.py")
+    if os.path.isfile(verify_script):
+        res = subprocess.run([sys.executable, verify_script])
+        if res.returncode != 0:
+            sys.stderr.write("[ERROR] Pre-flight baseline verification failed. Reconciliation aborted to prevent broken state sync.\n")
+            sys.exit(res.returncode)
+
     parser = argparse.ArgumentParser(
         description="Backlog reconciliation script that synchronises local markdown spec files with an external issue tracker (e.g. GitHub Issues, GitLab Issues)."
     )
@@ -4038,6 +4583,16 @@ def main():
         "--project",
         default=None,
         help="GitLab project path or numeric ID (e.g. 'gintatkinson/DEAP01-spec-core' or CI_PROJECT_PATH).",
+    )
+    parser.add_argument(
+        "--gitlab-group",
+        default=None,
+        help="GitLab group or namespace path.",
+    )
+    parser.add_argument(
+        "--token",
+        default=None,
+        help="Authentication token for issue tracker (GitLab REST API, Jira, or GitHub).",
     )
     parser.add_argument(
         "--jira-url",
@@ -4071,12 +4626,45 @@ def main():
         action="store_true",
         help="Force upstream compiler backlog reconciliation mode.",
     )
+    parser.add_argument(
+        "--linter-timeout",
+        type=int,
+        default=int(os.environ.get("DEAP_LINTER_TIMEOUT", "120")),
+        help="Timeout in seconds for pre-reconciliation linter validation (default: 120s or DEAP_LINTER_TIMEOUT).",
+    )
     args = parser.parse_args()
 
     sanitize_github_token_env()
     script_dir = os.path.dirname(os.path.abspath(__file__))
     workspace_dir = find_workspace_dir(script_dir)
     assert_no_mock_cli(workspace_dir)
+
+    # Automated hook: Closed-loop SysML v2 reverse-synchronization before tracker sync
+    docs_dir = os.path.join(workspace_dir, "docs")
+    upstream_marker = os.path.join(workspace_dir, ".pipeline", "upstream")
+    if os.path.isdir(docs_dir) and not os.path.isdir(upstream_marker):
+        compile_script = os.path.join(workspace_dir, "scripts", "compile_sysml.py")
+        if not os.path.isfile(compile_script):
+            compile_script = os.path.join(script_dir, "compile_sysml.py")
+        if os.path.isfile(compile_script):
+            print("Running pre-reconciliation SysML v2 reverse-synchronization...")
+            cmd = [sys.executable, compile_script, "--reverse-sync", "--docs", "docs"]
+            for cand_schema in (
+                os.path.join(workspace_dir, "schema", "platform.sysml"),
+                os.path.join(workspace_dir, "schema", "DEAP_MODEL.sysml"),
+                os.path.join(workspace_dir, ".pipeline", "schema.sysml"),
+            ):
+                if os.path.isfile(cand_schema):
+                    cmd.extend(["--schema", cand_schema])
+                    break
+            try:
+                res = subprocess.run(cmd, cwd=workspace_dir, capture_output=True, text=True, timeout=60)
+                if res.returncode != 0:
+                    print(f"[Warning] Pre-reconciliation SysML v2 reverse-sync failed:\n{res.stderr or res.stdout}", file=sys.stderr)
+                else:
+                    print("Pre-reconciliation SysML v2 reverse-synchronization completed successfully.")
+            except Exception as e:
+                print(f"[Warning] Pre-reconciliation SysML v2 reverse-sync encountered error: {e}", file=sys.stderr)
 
     # Programmatic gate: Run linter before proceeding with reconciliation
     blocked_specs = set()
@@ -4085,8 +4673,9 @@ def main():
     if linter_script and os.path.exists(linter_script):
         print("Running pre-reconciliation linter validation...")
         cmd = [sys.executable, linter_script, "--spec-only", "--allow-missing-specs"]
+        linter_timeout = getattr(args, "linter_timeout", 120) or 120
         try:
-            res = subprocess.run(cmd, cwd=workspace_dir, capture_output=True, text=True, timeout=30)
+            res = subprocess.run(cmd, cwd=workspace_dir, capture_output=True, text=True, timeout=linter_timeout)
             if res.returncode != 0:
                 output_text = (res.stdout or "") + "\n" + (res.stderr or "")
                 lines = [line.strip() for line in output_text.splitlines()]
@@ -4124,7 +4713,7 @@ def main():
             else:
                 print("Pre-reconciliation linter validation passed successfully.")
         except subprocess.TimeoutExpired:
-            print("[FATAL] Pre-reconciliation linter validation timed out after 30 seconds. Aborting.", file=sys.stderr)
+            print(f"[FATAL] Pre-reconciliation linter validation timed out after {linter_timeout} seconds. Aborting.", file=sys.stderr)
             sys.exit(1)
     else:
         print("[INFO] Pre-reconciliation linter not found; skipping pre-validation.")
@@ -4140,6 +4729,8 @@ def main():
             offline=args.offline,
             cli_gitlab_url=args.gitlab_url,
             cli_project=args.project,
+            cli_gitlab_group=getattr(args, "gitlab_group", None),
+            cli_token=getattr(args, "token", None),
             cli_jira_url=args.jira_url,
             cli_jira_project=args.jira_project,
             cli_jira_email=args.jira_email,
@@ -4195,7 +4786,7 @@ def main():
 
         # Both sides of every comparison fold through normalize_label (#329): an issue
         # filed as "User Story" lowercases to "user story", never matched "user-story",
-        # and was bucketed nowhere — its specification then reported no issue on the
+        # and was bucketed nowhere -- its specification then reported no issue on the
         # tracker and the duplicate stayed open and orphaned.
         labels_config = tracker_rules.get("labels", {})
         epic_label = normalize_label(labels_config.get("epic", "epic"))
@@ -4455,6 +5046,7 @@ def main():
                         sync_issue_body_to_tracker(
                             issue_num, filepath, issue_type="Epic", rules=rules,
                             issue_record=issue_dict[issue_num], provider_adapter=provider_adapter,
+                            known_issue_ids=set(issue_dict.keys()),
                         )
                         if completed and not is_already_resolved(issue_dict[issue_num], rules):
                             resolve_issue_on_tracker(
@@ -4468,7 +5060,7 @@ def main():
                             )
                 else:
                     print(
-                        f"Warning: No Epic issue on the tracker for {filename} — "
+                        f"Warning: No Epic issue on the tracker for {filename} -- "
                         f"no issue_id in its frontmatter and no title match for '{title}'"
                     )
 
@@ -4497,6 +5089,7 @@ def main():
                         sync_issue_body_to_tracker(
                             issue_num, filepath, issue_type="Feature", rules=rules,
                             issue_record=issue_dict[issue_num], provider_adapter=provider_adapter,
+                            known_issue_ids=set(issue_dict.keys()),
                         )
                         if completed and not is_already_resolved(issue_dict[issue_num], rules):
                             resolve_issue_on_tracker(
@@ -4510,7 +5103,7 @@ def main():
                             )
                 else:
                     print(
-                        f"Warning: No Feature issue on the tracker for {filename} — "
+                        f"Warning: No Feature issue on the tracker for {filename} -- "
                         f"no issue_id in its frontmatter and no title match for '{title}'"
                     )
 
@@ -4539,6 +5132,7 @@ def main():
                         sync_issue_body_to_tracker(
                             issue_num, filepath, issue_type="User Story", rules=rules,
                             issue_record=issue_dict[issue_num], provider_adapter=provider_adapter,
+                            known_issue_ids=set(issue_dict.keys()),
                         )
                         if completed and not is_already_resolved(issue_dict[issue_num], rules):
                             resolve_issue_on_tracker(
@@ -4552,7 +5146,7 @@ def main():
                             )
                 else:
                     print(
-                        f"Warning: No User Story issue on the tracker for {filename} — "
+                        f"Warning: No User Story issue on the tracker for {filename} -- "
                         f"no issue_id in its frontmatter and no title match for '{title}'"
                     )
 
@@ -4581,6 +5175,7 @@ def main():
                         sync_issue_body_to_tracker(
                             issue_num, filepath, issue_type="Use Case", rules=rules,
                             issue_record=issue_dict[issue_num], provider_adapter=provider_adapter,
+                            known_issue_ids=set(issue_dict.keys()),
                         )
                         if completed and not is_already_resolved(issue_dict[issue_num], rules):
                             resolve_issue_on_tracker(
@@ -4594,7 +5189,7 @@ def main():
                             )
                 else:
                     print(
-                        f"Warning: No Use Case issue on the tracker for {filename} — "
+                        f"Warning: No Use Case issue on the tracker for {filename} -- "
                         f"no issue_id in its frontmatter and no title match for '{title}'"
                     )
 
@@ -4620,6 +5215,7 @@ def main():
                 exit_code = e.code
             elif e.code is None:
                 exit_code = 0
+            sys.exit(exit_code)
         
         if exit_code != 0:
             tb_str = traceback.format_exc()

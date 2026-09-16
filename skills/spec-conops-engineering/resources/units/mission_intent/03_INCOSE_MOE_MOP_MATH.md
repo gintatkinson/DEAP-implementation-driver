@@ -20,7 +20,7 @@ A_o &= \frac{\mathrm{MTBM}}{\mathrm{MTBM} + \mathrm{MDT}} \\
 \end{aligned}
 $$
 
-Where and Operational Parameters:
+- Parameter Definitions & Engineering Units:
 
 | Parameter | Symbol | Units | Constraint / Rule | Description |
 | :--- | :--- | :--- | :--- | :--- |
@@ -42,7 +42,7 @@ $$
 \end{aligned}
 $$
 
-Where and Operational Parameters:
+- Parameter Definitions & Engineering Units:
 
 | Parameter | Symbol | Units | Constraint / Rule | Description |
 | :--- | :--- | :--- | :--- | :--- |
@@ -64,7 +64,7 @@ $$
 \end{aligned}
 $$
 
-Where and Operational Parameters:
+- Parameter Definitions & Engineering Units:
 
 | Parameter | Symbol | Units | Constraint / Rule | Description |
 | :--- | :--- | :--- | :--- | :--- |
@@ -86,7 +86,7 @@ C_{\mathrm{coverage}} &= \frac{\Omega_{\mathrm{surveyed}}}{\Omega_{\mathrm{total
 \end{aligned}
 $$
 
-Where and Operational Parameters:
+- Parameter Definitions & Engineering Units:
 
 | Parameter | Symbol | Units | Constraint / Rule | Description |
 | :--- | :--- | :--- | :--- | :--- |
@@ -103,7 +103,7 @@ Where and Operational Parameters:
 
 | Metric ID | Metric Type | Metric Name | Formulation / Equation | Threshold | Objective | Unit | Public Clause Citation |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| MoE-01 | MoE | Operational Availability | Ao = MTBM / (MTBM + MDT) | Ao_threshold | Ao_objective | Dimensionless | INCOSE SEH v5.0 §3.2 |
+| MoE-01 | MoE | Operational Availability | Ao = MTBM / (MTBM + MDT) | A_o_threshold | A_o_objective | Dimensionless | INCOSE SEH v5.0 §3.2 |
 | MoE-02 | MoE | State Space Coverage Ratio | C_coverage = Omega_surveyed / Omega_total | C_coverage_threshold | C_coverage_objective | Dimensionless | INCOSE SEH v5.0 §3.2 |
 | MoE-03 | MoE | State Identification Probability | P_ID = N_correct / N_targets | P_ID_threshold | P_ID_objective | Dimensionless | INCOSE SEH v5.0 §3.3 |
 | MoP-01 | MoP | Trajectory Tracking Deviation | max norm(p_act - p_cmd)_2D | epsilon_xtrack_threshold | epsilon_xtrack_objective | m | IEEE Std 1558-2020 §4.1 |

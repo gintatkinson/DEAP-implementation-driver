@@ -33,7 +33,7 @@ You should invoke this skill ONLY after the behavioral User Stories have been ex
 ## Step 2: Isolated Use Case Modeling (Subagent Dispatch Loop)
 
 1. **AST-Driven Use Case Identification:** Scan the SysML v2 model `use case def` blocks and structural schemas to identify all required System Use Cases (including mandatory behavioral triggers). **1:1 Container/Use Case Def Mapping Mandate:** Each distinct SysML `use case def` (or schema `container`/`choice`/`case`) MUST be extracted into its own separate Use Case file. Do NOT consolidate multiple use cases or containers into a single Use Case file. Compile the list of target Use Cases to be engineered.
-2. **Dispatch Use Case Subagent:** For each identified Use Case, invoke a **new, fresh subagent with an isolated context**. Pass ONLY the specific `use case def` AST node, associated system interaction text, relevant User Stories, Feature specs, and the Use Case template. The subagent must have no visibility or knowledge of other Use Cases.
+2. **Dispatch Use Case Subagent:** For each identified Use Case, invoke a **new, fresh subagent with an isolated context**. Pass ONLY the specific `use case def` AST node, associated system interaction text, relevant User Stories, Feature specs, the **Mandatory AST Manifest Slice** (the exact AST `use case def` with subject `part def`, actor port contracts, and include/extend dependencies from `.pipeline/schema.sysml`), and the Use Case template. The subagent must have no visibility or knowledge of other Use Cases.
 3. **Execution within Subagent Context:**
    - **Compliance Table Mandate:** Before writing the file, you MUST output a structured compliance table checking for system boundary subgraphs, external actors, and complete realization matrices.
    - **Formal AST-Driven Use Case Modeling:** Model a formal Use Case following standard UML Object-Oriented Analysis and Design (OOA/OOD) formats derived directly from SysML v2:
@@ -66,7 +66,7 @@ You should invoke this skill ONLY after the behavioral User Stories have been ex
     - **Pure Symbolic Mathematical Separation Rule**: When operational scenarios, safety boundaries, performance requirements, or system invariants involve mathematical equations:
       - Display math blocks (`$$ \begin{aligned} ... \end{aligned} $$`) MUST express **pure symbolic equations only**.
       - Strictly prohibit embedding physical unit macros (`\text{ ms}`, `\text{ kg}`, `\text{ m/s}`, etc.) inside display math equations.
-      - Mandate that all physical values, numerical limits, operational constants, and engineering units are defined in the accompanying "Where and Operational Parameters:" text section immediately following the equation block.
+      - Mandate that all physical values, numerical limits, operational constants, and engineering units are defined in the accompanying "- Parameter Definitions & Engineering Units:" text section immediately following the equation block.
       - Strictly prohibit dangling operators (such as `/` with no denominator) and unescaped underscores inside `\text{}` (mandating `\text{yaw-disturbance}` or structured subscripts like `\Delta v_{\text{yaw,dist}}`).
       - Multi-line aligned equations MUST use `\begin{aligned} ... \end{aligned}` inside `$$` delimiters on dedicated lines.
     - **Markdown Generation:** Write the Use Case as a local markdown file (e.g., `docs/use-cases/uc-01-register-core-entity.md`).
@@ -139,8 +139,8 @@ graph TD
 ```mermaid
 stateDiagram-v2
     [*] --> InitialState
-    InitialState --> State1 : "Event/Transition"
-    State1 --> State2 : "Event/Transition"
+    InitialState --> State1 : "Event - Transition"
+    State1 --> State2 : "Event - Transition"
 ```
 
 ## 7. Operational Context
@@ -154,7 +154,7 @@ D_{separation} &\ge D_{min,safe}
 \end{aligned}
 $$
 
-Where and Operational Parameters:
+- Parameter Definitions & Engineering Units:
 - $T_{reaction}$: System reaction and failover response time.
 - $T_{max,allowed}$: Maximum allowable latency limit (e.g. 50 ms).
 - $D_{separation}$: Separation distance between vehicles.
@@ -175,7 +175,7 @@ Normative Specification: [Normative Specification](link-to-specification)
 > **Mermaid Block Closing Constraints & Code Fence Integrity:**
 > - Every Mermaid diagram MUST be strictly closed with ```` ``` ```` on a new line. Leaking Mermaid blocks (e.g. having headings like `##` inside an unclosed diagram) or stray/unclosed code fences will fail downstream validation checks.
 > - Ensure there are no stray backticks or unmatched code fences in the document.
-> - **All Mermaid syntax constraints are defined in `rules/platform-independence.md` and MUST be observed in full** — including the prohibition on semicolons in `Note` and message text, colons in class members and note strings, stereotypes on relationship lines, and curly braces in class member lines. Do not maintain a local subset here; subsets drift (issue #289).
+> - **All Mermaid syntax constraints are defined in `rules/platform-independence.md` and MUST be observed in full** -- including the prohibition on semicolons in `Note` and message text, colons in class members and note strings, stereotypes on relationship lines, and curly braces in class member lines. Do not maintain a local subset here; subsets drift (issue #289).
 > - **Universal Angle Bracket Escaping**: Unquoted `<` and `>` characters are strictly forbidden across ALL diagram types (graph TD, flowchart TD, sequenceDiagram, stateDiagram-v2). Transitions, labels, or guards containing comparison operators, brackets, or guards MUST enclose the label in double quotes.
 > - **Use Case Node Label Quoting**: Mandate double quotes around graph TD/flowchart TD node labels containing slashes, colons, parentheses, or brackets (e.g. `Node["Save/Restore (Local DB)"]`).
 > - **Subgraph Title Quoting**: Mandate double quotes around subgraph titles with spaces or hyphens (e.g. `subgraph "System Boundary"`).
@@ -187,7 +187,7 @@ Normative Specification: [Normative Specification](link-to-specification)
 ## Step 5: Zero-Fault Backlog Synchronization
 1. **Mandatory Local Validation Gate:** Before committing, pushing, or creating issues in the backlog, the subagent MUST execute the local validation check:
    ```bash
-   ./skills/spec-orchestrator/scripts/verify_model_coverage.py --spec-only --allow-missing-specs
+   ./skills/spec-orchestrator/scripts/verify_model_coverage.py --spec-only --allow-missing-specs --only <spec>
    ```
    If the linter fails (returns a non-zero exit code), the subagent MUST parse the errors, fix all generated Use Case markdown files, and re-run the linter until it passes with exit code 0.
    Before committing the generated markdown files, the agent MUST run a check for untracked pipeline infrastructure files. If untracked files are found in `.pipeline/`, `skills/`, `rules/`, or `scripts/`, they must be staged and committed alongside the markdown files using `git add` to prevent remote divergence:

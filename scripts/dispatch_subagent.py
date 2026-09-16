@@ -240,6 +240,57 @@ def resolve_repository_classification(
     return DEFAULT_CLASSIFICATION
 
 
+CUSTOMER_JAIL_PATH_PATTERN = re.compile(
+    r"(?:/(?:Users|home)/[^/\s\)\"\'\`]+/)?(?:/)?jail/(?:uav|customer|drone|automotive|medical|defense)[-_a-zA-Z0-9]*(?:/)?",
+    re.IGNORECASE,
+)
+
+
+def sandbox_upstream_dispatch_payload(
+    prompt_text: str,
+    repo_classification: Optional[str] = None,
+) -> str:
+    """
+    Sanitizes and sandboxes subagent prompt payloads in upstream compiler mode.
+
+    When `repo_classification == 'UPSTREAM_SPEC_CORE_COMPILER'`:
+    - Strips downstream customer directory paths and external jail references.
+    - Enforces M2 metamodel closed-vocabulary typing contracts.
+
+    When in downstream application or template modes:
+    - Passes payload through unmodified.
+    """
+    if not prompt_text or not isinstance(prompt_text, str):
+        return prompt_text
+
+    norm_cls = (repo_classification or "").strip().upper().replace("-", "_")
+    if norm_cls != "UPSTREAM_SPEC_CORE_COMPILER":
+        return prompt_text
+
+    # 1. Strip downstream customer directory paths
+    sanitized = CUSTOMER_JAIL_PATH_PATTERN.sub("", prompt_text)
+
+    # 2. Enforce M2 metamodel contracts / Tier-1 Metamodel Transformation
+    if (
+        "Tier-1 Metamodel Transformation Mandate" not in sanitized
+        and "ALLOWED_M2_METAMODEL_TYPES" not in sanitized
+    ):
+        m2_clause = (
+            "6. Tier-1 Metamodel Transformation Mandate: Upstream compiler operates exclusively on abstract M2 metamodels "
+            "(ALLOWED_M2_METAMODEL_TYPES). Subagents are strictly forbidden from writing or proposing hardcoded M1 domain "
+            "instances (e.g. concrete weapon/vehicle names, signals, payloads). All domain entities must be projected to "
+            "Tier-1 abstract archetypes (Operator, Console, SystemController, SafetyInterlock, PhysicalActuator, Component, "
+            "Class, Port, Statechart, Constraint).\n"
+        )
+        if "PROCEED" in sanitized:
+            parts = sanitized.rsplit("PROCEED", 1)
+            sanitized = parts[0] + m2_clause + "PROCEED" + parts[1]
+        else:
+            sanitized = sanitized + "\n" + m2_clause
+
+    return sanitized
+
+
 def construct_prompt_template(
     skill_path: str,
     target: str,
@@ -291,6 +342,17 @@ def construct_prompt_template(
                 + "\n"
             )
 
+    tier1_mandate_block = ""
+    norm_cls = (resolved_classification or "").strip().upper().replace("-", "_")
+    if norm_cls == "UPSTREAM_SPEC_CORE_COMPILER":
+        tier1_mandate_block = (
+            "6. Tier-1 Metamodel Transformation Mandate: Upstream compiler operates exclusively on abstract M2 metamodels "
+            "(ALLOWED_M2_METAMODEL_TYPES). Subagents are strictly forbidden from writing or proposing hardcoded M1 domain "
+            "instances (e.g. concrete weapon/vehicle names, signals, payloads). All domain entities must be projected to "
+            "Tier-1 abstract archetypes (Operator, Console, SystemController, SafetyInterlock, PhysicalActuator, Component, "
+            "Class, Port, Statechart, Constraint).\n"
+        )
+
     prompt = f"""You are a context-isolated subagent operating under the DEAP Engineering Framework.
 
 Role: {role}
@@ -304,10 +366,10 @@ Mandatory Instructions:
 3. Micro-Task Scope: Focus exclusively on target `{target}` within a single-item micro-task scope.
 4. Engineering Standards: Follow test-driven development (RED-GREEN-REFACTOR) cycle discipline and strict verification before completion.
 5. Defect Reporting: If any defects, anomalies, or bugs are detected, record them using `gh issue create` (GitHub) or `glab issue create` (GitLab). Issue closure is strictly reserved for Product Owner review.
-{checklist_block}{extra_block}
+{tier1_mandate_block}{checklist_block}{extra_block}
 PROCEED
 """
-    return prompt
+    return sandbox_upstream_dispatch_payload(prompt, resolved_classification)
 
 
 def generate_subagent_prompt(

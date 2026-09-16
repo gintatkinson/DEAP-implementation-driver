@@ -21,7 +21,7 @@ Link state degradation triggers deterministic down-tier failover when the active
 
 $$
 \begin{aligned}
-\Delta t_{\mathrm{loss}}(t) &= t - t_{\mathrm{last\_valid\_rx}} \\
+\Delta t_{\mathrm{loss}}(t) &= t - t_{\text{last\_valid\_rx}} \\
 \mathrm{State}(t) &= \begin{cases}
 \mathrm{Tier}_i & \text{if } \Delta t_{\mathrm{loss}} < \tau_{\mathrm{timeout},i} \\
 \mathrm{Tier}_{i+1} & \text{if } \Delta t_{\mathrm{loss}} \ge \tau_{\mathrm{timeout},i} \quad \text{for } t \ge t_{\mathrm{fail}} + \tau_{\mathrm{hysteresis},i+1}
@@ -29,7 +29,7 @@ $$
 \end{aligned}
 $$
 
-Where and Operational Parameters:
+- Parameter Definitions & Engineering Units:
 
 | Parameter | Symbol | Units | Constraint / Rule | Description |
 | :--- | :--- | :--- | :--- | :--- |
@@ -37,7 +37,7 @@ Where and Operational Parameters:
 | Primary Heartbeat Timeout | tau_timeout_Primary | s | tau_timeout_Primary > 0 | Timeout triggering fallback to Alternate tier |
 | Alternate Heartbeat Timeout | tau_timeout_Alternate | s | tau_timeout_Alternate > tau_timeout_Primary | Timeout triggering fallback to Contingency tier |
 | Contingency Heartbeat Timeout | tau_timeout_Contingency | s | tau_timeout_Contingency > tau_timeout_Alternate | Timeout triggering fallback to Emergency tier |
-| Emergency Heartbeat Timeout | tau_timeout_Emergency | s | tau_timeout_Emergency > tau_timeout_Contingency | Timeout initiating definitive autonomous return-to-base |
+| Emergency Heartbeat Timeout | tau_timeout_Emergency | s | tau_timeout_Emergency > tau_timeout_Contingency | Timeout initiating definitive {{LIFECYCLE_FAILSAFE_SEQUENCE}} |
 | Re-acquisition Hysteresis Window | tau_hysteresis | s | tau_hysteresis > 0 | Continuous stable link duration required before up-tier promotion |
 
 ### 5.2 Cryptographic Security & Link Integrity

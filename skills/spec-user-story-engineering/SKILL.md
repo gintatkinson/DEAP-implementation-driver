@@ -51,7 +51,7 @@ For every BDD scenario and acceptance criteria set, you MUST generate and link t
 ## Step 2: Isolated User Story Modeling (Subagent Dispatch Loop)
 
 1. **Identify Scenarios & Triggers:** Analyze the specification chapters and structural schemas to determine all required deployment scenarios, calculations/derivations, interaction flows, and temporal/state lifecycles. Compile the list of target User Stories to be engineered.
-2. **Dispatch User Story Subagent:** For each identified User Story, invoke a **new, fresh subagent with an isolated context**. Pass ONLY the specific operational text, relevant schema definitions, related Feature specs, SysML interaction definitions, and the User Story template. The subagent must have no visibility or knowledge of other User Stories.
+2. **Dispatch User Story Subagent:** For each identified User Story, invoke a **new, fresh subagent with an isolated context**. Pass ONLY the specific operational text, relevant schema definitions, related Feature specs, the **Mandatory AST Manifest Slice** (the exact AST `action def`, `port def`, and complete `state def` state machine family with all states, events, transitions, guards, and entry/exit actions from `.pipeline/schema.sysml`), and the User Story template. The subagent must have no visibility or knowledge of other User Stories.
 3. **Execution within Subagent Context:**
    - **Compliance Table Mandate:** Before writing the file, you MUST output a structured compliance table checking for lifeline aliasing (e.g. 'actorName : Classifier'), open return arrows ('-->'), return value assignment signatures (no method call format), Given-When-Then BDD scenarios, SysML interaction binding, and SysML test case definition bindings.
    - **Behavioral Modeling:** Model the scenario as a formal User Story integrated with OOA/OOD principles:
@@ -62,8 +62,8 @@ For every BDD scenario and acceptance criteria set, you MUST generate and link t
        - *SysML Interaction Realization*: Parse SysML `interaction` AST blocks to construct lifelines, message sequences, and triggers.
        - *Lifeline Notation*: All sequence diagrams must use the standard UML lifeline notation `name : Classifier` or `: Classifier` (using Mermaid alias syntax: `actor userActor as "userActor : UserActor"` or `participant systemService as "systemService : SystemService"`).
        - *Lifeline Part Binding*: Every internal `participant` classifier MUST resolve to a valid SysML `part def` declared in the SysML AST.
-       - *Actor vs Participant (enforced — issue #277)*: The choice of keyword is semantic, not cosmetic, and determines whether the classifier must exist in a Feature class diagram / SysML part definition.
-         - Declare a lifeline `actor` **only** when it represents an entity **outside the system boundary** — a human role, or a third-party system you do not model. An `actor` classifier is **exempt** from the structural-definition requirement, because external entities are correctly absent from the structural models.
+       - *Actor vs Participant (enforced -- issue #277)*: The choice of keyword is semantic, not cosmetic, and determines whether the classifier must exist in a Feature class diagram / SysML part definition.
+         - Declare a lifeline `actor` **only** when it represents an entity **outside the system boundary** -- a human role, or a third-party system you do not model. An `actor` classifier is **exempt** from the structural-definition requirement, because external entities are correctly absent from the structural models.
          - Declare a lifeline `participant` for every **internal** object. A `participant` classifier **MUST** be defined as a class in some Feature's UML Class Diagram and as a SysML `part def`, and every message sent to it must map to a public operation on that class/part.
        - *Open Return Arrow*: Return/reply messages must use the open arrowhead (`-->` in Mermaid) instead of the filled/closed arrowhead (`-->>`).
        - *Return Value Signatures*: Return messages must represent assignments/return values (e.g. `isValid : Boolean`) rather than method/operation calls.
@@ -85,7 +85,7 @@ For every BDD scenario and acceptance criteria set, you MUST generate and link t
     - **Pure Symbolic Mathematical Separation Rule**: When specifying mathematical derivations, calculations, kinematic equations, or control laws:
       - Display math blocks (`$$ \begin{aligned} ... \end{aligned} $$`) MUST express **pure symbolic equations only**.
       - Strictly prohibit embedding physical unit macros (`\text{ ms}`, `\text{ kg}`, `\text{ m/s}`, etc.) inside display math equations.
-      - Mandate that all physical values, numerical limits, constants, calibration thresholds, and engineering units are defined in the accompanying "Where and Operational Parameters:" text section immediately following the equation.
+      - Mandate that all physical values, numerical limits, constants, calibration thresholds, and engineering units are defined in the accompanying "- Parameter Definitions & Engineering Units:" text section immediately following the equation.
       - Strictly prohibit dangling operators (such as `/` with no denominator) and unescaped underscores inside `\text{}` (mandating `\text{yaw-disturbance}` or structured subscripts like `\Delta v_{\text{yaw,dist}}`).
       - Multi-line aligned equations MUST use `\begin{aligned} ... \end{aligned}` inside `$$` delimiters on dedicated lines.
     - **Tandem Elaboration & Zero Model Drift:** Any newly derived operations, algorithmic methods, state transitions, port interactions, or verification test cases identified during User Story modeling MUST be reflected back into the SysML v2 model (`.pipeline/schema.sysml`) as `interaction def`, `action def`, `state def`, `port def`, or `test case def` elements per `rules/sysml-ssot-completeness.md`.
@@ -157,8 +157,8 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
     [*] --> InitialState
-    InitialState --> ActiveState : "activate [activationCodeIsValid == true] / initializeSession"
-    ActiveState --> TerminatedState : "expire [timeElapsed >= timeoutLimit] / cleanupResources"
+    InitialState --> ActiveState : "activate [activationCodeIsValid == true] - initializeSession"
+    ActiveState --> TerminatedState : "expire [timeElapsed >= timeoutLimit] - cleanupResources"
     TerminatedState --> [*]
 ```
 
@@ -192,7 +192,7 @@ P_{mech} &= \tau \cdot \omega
 \end{aligned}
 $$
 
-Where and Operational Parameters:
+- Parameter Definitions & Engineering Units:
 - $E_{total}$: Total mechanical energy of the system.
 - $E_{kinetic}$: Kinetic energy ($\frac{1}{2} m v^2$).
 - $E_{potential}$: Potential energy ($m g h$).
@@ -228,14 +228,14 @@ Normative Specification: [Normative Specification](link-to-specification)
 > **Mermaid Block Closing Constraints & Code Fence Integrity:**
 > - Every Mermaid diagram MUST be strictly closed with ```` ``` ```` on a new line. Leaking Mermaid blocks (e.g. having headings like `##` inside an unclosed diagram) or stray/unclosed code fences will fail downstream validation checks.
 > - Ensure there are no stray backticks or unmatched code fences in the document.
-> - **All Mermaid syntax constraints are defined in `rules/platform-independence.md` and MUST be observed in full** — including the prohibition on semicolons in `Note` and message text, colons in class members and note strings, stereotypes on relationship lines, and curly braces in class member lines. Do not maintain a local subset here; subsets drift (issue #289).
+> - **All Mermaid syntax constraints are defined in `rules/platform-independence.md` and MUST be observed in full** -- including the prohibition on semicolons in `Note` and message text, colons in class members and note strings, stereotypes on relationship lines, and curly braces in class member lines. Do not maintain a local subset here; subsets drift (issue #289).
 
 
 
 ## Step 5: Zero-Fault Backlog Synchronization
 1. **Mandatory Local Validation Gate:** Before committing, pushing, or creating issues in the backlog, the subagent MUST execute the local validation check:
    ```bash
-   ./skills/spec-orchestrator/scripts/verify_model_coverage.py --spec-only --allow-missing-specs
+   ./skills/spec-orchestrator/scripts/verify_model_coverage.py --spec-only --allow-missing-specs --only <spec>
    ```
    If the linter fails (returns a non-zero exit code), the subagent MUST parse the errors, fix all generated User Story markdown files, and re-run the linter until it passes with exit code 0.
    Before committing the generated markdown files, the agent MUST run a check for untracked pipeline infrastructure files. If untracked files are found in `.pipeline/`, `skills/`, `rules/`, or `scripts/`, they must be staged and committed alongside the markdown files using `git add` to prevent remote divergence:

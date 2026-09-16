@@ -234,8 +234,9 @@ class TestGitLabApiOperations(unittest.TestCase):
         offline_provider = GitLabV4Provider(offline=True)
         self.assertEqual(offline_provider.list_issues(), [])
 
+    @patch("shutil.which", return_value=None)
     @patch("urllib.request.urlopen")
-    def test_api_error_handling(self, mock_urlopen):
+    def test_api_error_handling(self, mock_urlopen, mock_which):
         mock_urlopen.side_effect = Exception("API connection error")
         created = self.provider.create_issue("Title", "Body")
         self.assertIsNone(created)
@@ -498,5 +499,53 @@ class TestMultiProviderBacklogLinkSynthesis(unittest.TestCase):
         self.assertEqual(base_url, "https://gitlab.internal.corp/safety-team/uas-core/-/blob/release-1.0")
 
 
+class TestGitLabCITemplate(unittest.TestCase):
+    def setUp(self):
+        self.repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+    def test_gitlab_ci_template_exists_in_pipeline_and_templates(self):
+        template_in_pipeline = os.path.join(self.repo_root, ".pipeline", ".gitlab-ci.yml")
+        template_in_templates = os.path.join(self.repo_root, ".pipeline", "templates", ".gitlab-ci.yml")
+        self.assertTrue(os.path.isfile(template_in_pipeline), f"Expected {template_in_pipeline} to exist")
+        self.assertTrue(os.path.isfile(template_in_templates), f"Expected {template_in_templates} to exist")
+
+    def test_root_gitlab_ci_absent_in_upstream(self):
+        if not os.path.exists(os.path.join(self.repo_root, ".pipeline", "upstream")):
+            self.skipTest("Skipping test_root_gitlab_ci_absent_in_upstream in downstream repository")
+        root_gitlab_ci = os.path.join(self.repo_root, ".gitlab-ci.yml")
+        self.assertFalse(os.path.exists(root_gitlab_ci), "Upstream spec-core root must not have .gitlab-ci.yml")
+
+    def test_install_pipeline_gitlab_copies_template(self):
+        import tempfile
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmpdir:
+            installer = os.path.join(self.repo_root, "scripts", "install_pipeline.sh")
+            res = subprocess.run(
+                ["bash", installer, "-p", "gitlab", tmpdir],
+                capture_output=True,
+                text=True,
+                cwd=self.repo_root,
+            )
+            self.assertEqual(res.returncode, 0, f"Installer failed: {res.stderr}")
+            installed_ci = os.path.join(tmpdir, ".gitlab-ci.yml")
+            self.assertTrue(os.path.isfile(installed_ci), f"Expected {installed_ci} to exist after -p gitlab install")
+
+    def test_install_pipeline_github_does_not_copy_template(self):
+        import tempfile
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmpdir:
+            installer = os.path.join(self.repo_root, "scripts", "install_pipeline.sh")
+            res = subprocess.run(
+                ["bash", installer, "-p", "github", tmpdir],
+                capture_output=True,
+                text=True,
+                cwd=self.repo_root,
+            )
+            self.assertEqual(res.returncode, 0, f"Installer failed: {res.stderr}")
+            installed_ci = os.path.join(tmpdir, ".gitlab-ci.yml")
+            self.assertFalse(os.path.exists(installed_ci), f"Expected {installed_ci} NOT to exist after -p github install")
+
+
 if __name__ == "__main__":
     unittest.main()
+

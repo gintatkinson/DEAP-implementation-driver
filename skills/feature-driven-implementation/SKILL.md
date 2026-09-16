@@ -14,7 +14,7 @@ metadata:
 
 Use this skill to execute the end-to-end implementation lifecycle for prioritized Agile features and ensure complete automated resolution of feature issues, walkthrough updates, and parent Epics. Resolution means `Fixed / Resolved`; an agent never reaches `Closed`, which requires Product Owner validation (`.pipeline/constitution.md:161`).
 
-This skill integrates subagent-driven development, TDD execution discipline, two-stage review gates, micro-task decomposition, systematic debugging, and verification-before-completion — ensuring that agents cannot drift, falsely report success, or skip quality gates.
+This skill integrates subagent-driven development, TDD execution discipline, two-stage review gates, micro-task decomposition, systematic debugging, and verification-before-completion -- ensuring that agents cannot drift, falsely report success, or skip quality gates.
 
 ## Core Mandates
 
@@ -28,24 +28,25 @@ This skill integrates subagent-driven development, TDD execution discipline, two
 8. **Validation Isolation & Separate Subagent Audit:** The primary agent MUST NOT self-verify database changes or documentation links without a strict checklist. Dispatch a separate **Validator Subagent** if available. In single-agent contexts, perform a strict, isolated self-audit (Step 4.5 fallback) verifying that every structural identifier and link target referenced in the walkthrough resolves and exists in the unified data repository.
 9. **Test-Driven Development (TDD):** All implementation MUST follow the RED-GREEN-REFACTOR cycle. Write a failing test FIRST, verify it fails, write minimal code to pass, verify it passes, then refactor. Code written before its corresponding test must be deleted and re-implemented after the test.
 10. **Micro-Task Decomposition:** Break every approved implementation plan into micro-tasks of 2-5 minutes each. Each micro-task must have: exact file paths, expected changes, a driving test, and a verification step. Never execute more than one micro-task without verification.
-11. **Subagent-Driven Development:** Each micro-task SHOULD be dispatched to a fresh subagent with isolated context. The coordinator provides only the task text, relevant file contents, and project conventions — never the full session history. This prevents context drift and confirmation bias. See Step 3 for runtime-specific dispatch instructions.
-12. **Two-Stage Review:** After each micro-task's implementation, two reviews MUST occur in order: (1) **Spec Compliance Review** — does the code match the approved plan and RFC/spec requirements? (2) **Code Quality Review** — is the code well-structured, typed, tested, and maintainable? Both must pass before proceeding to the next task.
+11. **Subagent-Driven Development:** Each micro-task SHOULD be dispatched to a fresh subagent with isolated context. The coordinator provides only the task text, relevant file contents, and project conventions -- never the full session history. This prevents context drift and confirmation bias. See Step 3 for runtime-specific dispatch instructions.
+12. **Two-Stage Review:** After each micro-task's implementation, two reviews MUST occur in order: (1) **Spec Compliance Review** -- does the code match the approved plan and RFC/spec requirements? (2) **Code Quality Review** -- is the code well-structured, typed, tested, and maintainable? Both must pass before proceeding to the next task.
 13. **Verification-Before-Completion:** Before declaring any task, micro-task, or feature complete, the agent MUST provide concrete proof of correctness (raw test output, build output, or explicit file-content verification). Assertions like "it works" or "tests pass" without pasted evidence are forbidden.
-14. **Inter-Task Code Review:** After each micro-task, diff the changes against the approved plan. Log deviations. Critical deviations block progress until resolved with the user. A deviation is **critical** — HALT and ask, do not log-and-continue — when any of these hold:
+14. **Inter-Task Code Review:** After each micro-task, diff the changes against the approved plan. Log deviations. Critical deviations block progress until resolved with the user. A deviation is **critical** -- HALT and ask, do not log-and-continue -- when any of these hold:
     - the set of files touched differs from the set named in the task;
     - the task says append or add, and delivering it requires modifying or replacing existing code;
     - the change alters the behaviour or signature of an existing symbol that has callers, including changing which error type a function returns;
     - the work expands beyond the named files to make the named files compile or pass.
-    Everything else is logged and execution continues. "This is the only viable path" is not a finding — if the task as written cannot be delivered without a critical deviation, that is the report, and the plan is what changes.
+    Everything else is logged and execution continues. "This is the only viable path" is not a finding -- if the task as written cannot be delivered without a critical deviation, that is the report, and the plan is what changes.
 15. **Subagent Research & Write Delegation:** The coordinator is strictly required to delegate all framework/dependency research tasks (Step 1.5) to a dedicated research subagent, and all codebase/specification micro-task write operations (Step 3) to dedicated implementer subagents.
 16. **Closed-Loop Payload Verification Gate & Anti-Complacency Rule:** Exit code 0 is NEVER sufficient proof of success. After modifying or publishing any GitHub issue or document, the agent MUST run `gh issue view <ID>` or `gh api` to fetch the live published payload and inspect links, Mermaid headers, and syntax. Optimism bias is prohibited: agents must cite empirical output of live payload inspection before declaring completion.
+17. **Commit Message Non-Closure Invariant:** Agents and automated scripts are strictly prohibited from using issue auto-closing keywords (`fix`, `fixes`, `fixed`, `close`, `closes`, `closed`, `resolve`, `resolves`, `resolved` preceding `#<id>`) in git commit messages. All commit messages referencing issues MUST use neutral citations: `(#<id>)` or `(refs #<id>)` to prevent server-side premature auto-closure (`.pipeline/constitution.md:266`, `rules/tracker-source-of-truth.md`).
 
 ---
 
 ## Step-by-Step Workflow
 
 ### Step 1: Backlog & Dependency Mapping
-1. **Read the project constitution** (`.pipeline/constitution.md`) if it exists. This is the **functional layer** — domain rules, agent behavior, universal quality gates.
+1. **Read the project constitution** (`.pipeline/constitution.md`) if it exists. This is the **functional layer** -- domain rules, agent behavior, universal quality gates.
 2. **Read the implementation profile** (`.pipeline/profiles/<target-platform>.md`) for the target platform. This provides platform-specific coding standards, testing mandates, build commands, and deployment config. If no profile exists for the target platform, halt and prompt the human to create one using the `project-constitution` skill. Ensure that the downstream workspace has been bootstrapped using the configured onboarding workflow or the Direct Copy workflow (Installation Option 2 in the README). This creates/copies a fresh repository locally BEFORE the downstream agent begins work.
 3. Analyze `docs/epics/` and `docs/features/` to determine feature dependencies.
 4. Map the backlog queue in order of base dependencies first.
@@ -86,7 +87,7 @@ If the feature involves unfamiliar frameworks, rapidly-evolving libraries, or ne
    - What changes
    - The failing test that drives the change
    - How to verify completion
-5. Present the plan to the user and wait for explicit approval. Enter "The Grill" — interactive review to challenge design choices, clarify ambiguities, and validate spec/RFC compliance.
+5. Present the plan to the user and wait for explicit approval. Enter "The Grill" -- interactive review to challenge design choices, clarify ambiguities, and validate spec/RFC compliance.
 
 ### Step 3: Execution & Build (Subagent-Driven TDD Vertical Slice)
 
@@ -94,7 +95,7 @@ Execution follows a **per-task subagent dispatch loop**. The coordinator reads t
 
 #### 3.1 Pre-Execution
 1. **No Handover Trust:** Never assume previous phases or turns implemented a portion of the code correctly based on summaries. Explicitly open and check the source code files in all relevant directories.
-   - **Provenance check.** If a target file already contains symbols the task assumed absent, establish where they came from **before editing them**: `git status <file>`, `git log -p -2 <file>`, `git diff <file>`. Committed code means the task was written against a stale view of the file — report that, do not silently reconcile. Uncommitted changes by another process mean a concurrent writer, which is a **HALT** under § 3.7 *Invariants* ("Never dispatch multiple implementer subagents in parallel on the same feature"); editing that file corrupts their work. Deciding which case applies is two commands and is never optional.
+   - **Provenance check.** If a target file already contains symbols the task assumed absent, establish where they came from **before editing them**: `git status <file>`, `git log -p -2 <file>`, `git diff <file>`. Committed code means the task was written against a stale view of the file -- report that, do not silently reconcile. Uncommitted changes by another process mean a concurrent writer, which is a **HALT** under § 3.7 *Invariants* ("Never dispatch multiple implementer subagents in parallel on the same feature"); editing that file corrupts their work. Deciding which case applies is two commands and is never optional.
 2. **Extract All Tasks:** Read the approved plan. Extract every micro-task with its full text, target files, driving test, and verification step. Create a tracking list (e.g., `task.md` or TodoWrite).
 3. **TDD Cycle Mandate:** Mandate writing failing unit tests for both Happy Path AND all alternate/exception flows declared in specs before entering the GREEN refactoring phase.
 
@@ -138,7 +139,7 @@ The coordinator is strictly forbidden from truncating, abbreviating, or strippin
 If a subagent returns an empty result, fails unexpectedly, or stalls:
 1. **First Failure**: Upon an empty result or transient error, re-dispatch a fresh subagent with the identical, un-degraded preamble and full payload intact.
 2. **Two Consecutive Failures**: If two consecutive failures occur with identical preamble payloads, HALT immediately and escalate to human operator with the failure log.
-3. **Governance Invariant**: Never strip governance under any circumstances — empty result -> re-dispatch with identical preamble -> two consecutive failures -> escalate to human. Never strip governance.
+3. **Governance Invariant**: Never strip governance under any circumstances -- empty result -> re-dispatch with identical preamble -> two consecutive failures -> escalate to human. Never strip governance.
 
 The implementer MUST NOT receive the full session history or prior task context.
 
@@ -155,7 +156,7 @@ Configure the dispatch method dynamically based on the current agent orchestrato
 - **RED:** Write failing unit tests for both Happy Path AND all alternate/exception flows declared in specs before entering the GREEN refactoring phase. Run them and confirm they fail with the expected error.
 - **GREEN:** Write the minimal code to make all tests pass. Run them. Confirm they pass.
 - **REFACTOR:** Clean up the code while keeping tests green. Run tests again.
-- **COMMIT:** Commit the passing micro-task with a descriptive message.
+- **COMMIT:** Commit the passing micro-task with a descriptive message adhering to the Commit Message Non-Closure Invariant (neutral citations: `(#<id>)` or `(refs #<id>)`).
 - **SELF-REVIEW:** Implementer reviews own changes before handing back.
 
 **A.2 Output Integrity Verification**
@@ -207,7 +208,7 @@ Configure the review method dynamically based on the current agent orchestrator 
 
 #### 3.5 Inter-Task Continuation
 - After both reviews pass, mark task complete in tracking list.
-- **Do not pause to ask "Should I continue?"** — execute all tasks continuously unless BLOCKED.
+- **Do not pause to ask "Should I continue?"** -- execute all tasks continuously unless BLOCKED.
 - If deviation from plan is critical (architectural change, missing spec compliance), STOP and return to "The Grill."
 
 #### 3.6 Code Presence Verification
@@ -221,13 +222,14 @@ Before proceeding to Step 4, perform explicit grep or file-reading checks of all
 - Never skip the re-review loop (reviewer found issues = implementer fixes = review again).
 - **Cross-Cutting Field Preservation:** When adding fields to domain models, all constructors, `copyWith` methods, and `valueWriters` MUST preserve new fields across all paths. Micro-tasks MUST explicitly include regression tasks for existing constructors, `copyWith` methods, and `valueWriters`.
 - **Governance Acknowledgment Invariant:** No subagent may proceed to code generation without submitting and receiving coordinator approval of a complete governance acknowledgment.
+- **Commit Message Non-Closure Invariant:** Agents and automated scripts are strictly prohibited from using issue auto-closing keywords (`fix`, `fixes`, `fixed`, `close`, `closes`, `closed`, `resolve`, `resolves`, `resolved` preceding `#<id>`) in git commit messages. All commit messages referencing issues MUST use neutral citations: `(#<id>)` or `(refs #<id>)` to prevent server-side premature auto-closure (`.pipeline/constitution.md:266`, `rules/tracker-source-of-truth.md`).
 
 ### Step 3.8: Systematic Debugging (When Tests Fail Unexpectedly)
 
 If a test fails with an unexpected error during Step 3, follow the 4-phase debugging protocol:
 
 1. **Reproduce:** Isolate the failure. Run the single failing test in isolation. Record exact error output.
-2. **Diagnose:** Trace the root cause. Do NOT guess — read the stack trace, add targeted logging, check variable state. Identify the exact line and condition causing failure.
+2. **Diagnose:** Trace the root cause. Do NOT guess -- read the stack trace, add targeted logging, check variable state. Identify the exact line and condition causing failure.
 3. **Fix:** Apply the minimal upstream fix. Prefer single-line changes. Do not add workarounds downstream. Do not "fix" by weakening or deleting the test.
 4. **Verify:** Run the full test suite (not just the fixed test) to confirm no regressions. Only proceed when all tests pass.
 
@@ -235,7 +237,7 @@ If a test fails with an unexpected error during Step 3, follow the 4-phase debug
 1. **Assertion-Based Automation:** When writing or updating tests, do not rely on basic smoke tests. Add explicit assertions that query return values, object states, or output trees for the presence of the new fields or data properties. For any modified domain models, mandate regression assertions on existing tests for operations on modified domain models to verify field preservation through every constructor, `copyWith`, and `valueWriter` path.
 2. **Full Compilation Build:** Run local tests and run a full compilation build of the entire application (e.g. `flutter build` or `npm run build` as specified by the platform profile) to ensure it compiles without errors and is completely ready to run.
 3. **Parity Auditor Gate:** Mandate running PYTHONPATH=skills/spec-orchestrator/parity_auditor/src python3 -m parity_auditor.cli --workspace . --allow-missing-specs as a blocking gate before completing any implementation task.
-4. **Evidence of Completion:** Paste actual raw test output / build output as proof. Do not summarize — show the raw output.
+4. **Evidence of Completion:** Paste actual raw test output / build output as proof. Do not summarize -- show the raw output.
 5. Provide **precise, step-by-step human manual testing instructions** in the verification section. The instructions must guide the user on exactly what commands, scripts, or interface interactions to execute, what inputs to feed, and what specific output (e.g., payload, log entry, UI state change, database record) to inspect to verify correctness.
 6. **Independent Subagent Validation Check (or Single-Agent Fallback Self-Audit):**
    - **Multi-Agent Mode:** Dispatch a separate **Validator Subagent** to read the draft walkthrough and cross-reference every referenced structural identifier and link target. The Validator subagent must independently locate these elements in the codebase to confirm they exist and match the logical specifications. Fail the validation step if there is any mismatch.
@@ -250,11 +252,11 @@ If a test fails with an unexpected error during Step 3, follow the 4-phase debug
    >
    > **ZERO-TRUST COLLISION CHECK:** Before updating or creating this file, search the repository and history for the target filename to check its existing content. If it exists, read it first and append/merge the new changes rather than overwriting. If there is a filename mismatch or conflict, alert the user and resolve the naming conflict immediately.
 3. **Backlog Reconciliation**: Run the backlog reconciliation script to synchronize all checklists, updated spec bodies (such as fixed Mermaid diagrams), and issue states back to GitHub: python3 skills/spec-orchestrator/scripts/reconcile_backlog.py
-4. Commit and push the solution document using the configured commit command template.
-5. Mark the feature issue `Fixed / Resolved` on the active issue tracker provider: apply the `status:fixed-resolved` label and embed a comment pointing to the committed solution document, dynamically constructing the URL using `meta.upstream_repository` from configuration. Leave the issue open — `Closed` requires Product Owner validation (`.pipeline/constitution.md:161`).
+4. Commit and push the solution document using the configured commit command template with neutral issue citations (e.g. `docs(designs): add solution walkthrough (refs #<id>)` or `(#<id>)`). Never use auto-closing keywords (`fix`, `fixes`, `close`, `closes`, `resolve`, `resolves` preceding `#<id>`).
+5. Mark the feature issue `Fixed / Resolved` on the active issue tracker provider: apply the `status:fixed-resolved` label and embed a comment pointing to the committed solution document, dynamically constructing the URL using `meta.upstream_repository` from configuration. Leave the issue open -- `Closed` requires Product Owner validation (`.pipeline/constitution.md:161`).
 6. Update the local parent Epic checklist:
    - Mark the completed feature as completed (`[x]`).
-   - Commit and push the updated Epic checklist file.
+   - Commit and push the updated Epic checklist file (using neutral citations: `docs(epic): update checklist (#<id>)`).
 
 ### Step 6: Agentic Epic Closure (CRITICAL)
 1. Inspect the local Epic checklist.
@@ -267,9 +269,6 @@ If a test fails with an unexpected error during Step 3, follow the 4-phase debug
 If a tool command (linter or reconciler) fails during implementation:
 1. **Do not proceed** to the next step.
 2. **Log the exact error** (stderr, exit code).
-3. **Automated Upstream Reporting**: If the step fails and you suspect it is due to a bug in the pipeline tooling, you MUST automatically file a bug report upstream:
-   - Locating the latest diagnostic payload JSON at `.pipeline/diagnostics/repro_payload_[timestamp].json`.
-   - Running the command:
-     `gh issue create --title "Tooling Bug: [Command] failed" --body-file [payload_path] --label "bug"`
+3. **Automated Upstream Reporting**: If the step fails and you suspect it is due to a bug in the pipeline tooling, you MUST dispatch a fresh context-isolated subagent with `skills/adversarial-code-auditor/SKILL.md` to perform the 5-pillar audit, generate the verified 7-section defect dossier, and submit it via `python3 scripts/file_defect.py` (e.g. `python3 scripts/file_defect.py --repo gintatkinson/DEAP01-spec-core --title "Tooling Bug: [Command] failed" --body-file [payload_path] --label "bug"`).
 4. Escalate to the user with the issue URL and error context.
 

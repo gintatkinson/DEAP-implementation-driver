@@ -28,6 +28,7 @@ from ..core.workspace import WorkspaceRepository
 ALWAYS_INVALID_PLACEHOLDER_PATTERNS = [
     # Real references look like '#43'. Any bracketed token is unresolved.
     (re.compile(r"#\[[^\]]+\]"), "unresolved issue reference token"),
+    (re.compile(r"#TBD\b", re.I), "unresolved reference token"),
     (re.compile(r"\[(?:Feat(?:ure)?|Epic|US|UC|User\s*Story|Use\s*Case|Story|Issue)[-_\s]*(?:ID|IssueID)\]", re.I),
      "unresolved issue reference token"),
     (re.compile(r"\[(?:Epic|Feature|User\s*Story|Use\s*Case)\s+Title\]", re.I),
@@ -55,9 +56,37 @@ CONDITIONAL_STUB_PATTERNS = [
     (re.compile(r"\*\(\s*none(?:\s+registered)?\s*\)\*", re.I), "placeholder stub"),
     # Parentheses optional: "*(TBD)*" reads exactly like "*(None)*", which the
     # pattern above already accepts in both forms. Without this, the near-variant
-    # slips through — the same gap the comment above records (#280).
+    # slips through -- the same gap the comment above records (#280).
     (re.compile(r"\*\s*\(?\s*(?:to be populated|tbd|n/a)\s*\)?\s*\*", re.I), "placeholder stub"),
 ]
+
+ALLOWED_METADATA_PLACEHOLDERS = re.compile(
+    r"^#?\[(?:IssueID|EpicID|FeatureID|EpicIssueID)\]$|^#TBD$",
+    re.IGNORECASE,
+)
+
+
+def _is_metadata_header_table_row(line: str) -> bool:
+    """Check if a line is a metadata header table row."""
+    stripped = line.strip()
+    if not (stripped.startswith("|") and stripped.endswith("|")):
+        return False
+    cells = [c.strip() for c in stripped.strip("|").split("|")]
+    if len(cells) < 2:
+        return False
+    key = re.sub(r'[*`_:#]', '', cells[0]).strip().lower()
+    key = re.sub(r'[\s\-/]+', '_', key)
+    metadata_keys = {
+        "issue_id", "issue", "parent_epic", "feature_id", "epic_id",
+        "epic_issue_id", "status", "doc_status", "document_status", "state",
+        "user_story_id", "use_case_id", "story_id", "id", "doc_id",
+        "document_id", "attribute", "key", "field", "property",
+        "parent", "epic", "feature", "type", "title", "package",
+        "subsystem", "generation_mode", "specification_source",
+        "interface_type", "schema_containers", "version", "date",
+        "release_date", "target_baseline",
+    }
+    return key in metadata_keys
 
 
 def find_unresolved_placeholders(content: str, patterns=None):
@@ -65,8 +94,16 @@ def find_unresolved_placeholders(content: str, patterns=None):
     if patterns is None:
         patterns = ALWAYS_INVALID_PLACEHOLDER_PATTERNS
     for lineno, line in enumerate(content.splitlines(), 1):
+        is_meta_row = _is_metadata_header_table_row(line)
         for pattern, label in patterns:
-            if pattern.search(line):
+            has_unresolved = False
+            for m in pattern.finditer(line):
+                matched_str = m.group(0)
+                if is_meta_row and ALLOWED_METADATA_PLACEHOLDERS.fullmatch(matched_str.strip()):
+                    continue
+                has_unresolved = True
+                break
+            if has_unresolved:
                 yield lineno, label, line.strip()
                 break
 
@@ -74,7 +111,7 @@ import yaml
 from typing import Optional, Set, Tuple
 
 # Import SysML v2 AST classes via the fail-closed loader (refs #76): resolve
-# the real scripts dir or raise ImportError — never bind None silently.
+# the real scripts dir or raise ImportError -- never bind None silently.
 from ..utils.sysml_loader import load_sysml_ast_members
 
 _sysml_ast = load_sysml_ast_members([
@@ -834,8 +871,27 @@ class UmlValidator(IValidator):
                         if fm_key in ("subagent_drafted", "subagent-drafted") and fm_val == "true":
                             has_subagent_tag = True
                             break
+
         if not has_subagent_tag:
-            errors.append(Finding("specification-requires-the-subagent-generation-mode-marker", f"{doc_type} {filename} violates the Item-Level Subagent Context Isolation mandate. Specifications must be drafted strictly inside a context-isolated subagent with 'generation_mode: subagent' in the frontmatter.", location=filename))
+            for line in content.splitlines():
+                if "|" in line:
+                    parts = [p.strip() for p in line.split("|")]
+                    if parts and parts[0] == "":
+                        parts = parts[1:]
+                    if parts and parts[-1] == "":
+                        parts = parts[:-1]
+                    if len(parts) >= 2:
+                        raw_key = parts[0]
+                        raw_val = parts[1]
+                        clean_key = re.sub(r'[*`_]', '', raw_key).strip().lower()
+                        clean_val = re.sub(r'[*`_\'"]', '', raw_val).strip().lower()
+                        if clean_key in ("generation mode", "generation_mode", "generation-mode", "subagent drafted", "subagent_drafted", "subagent-drafted"):
+                            if clean_val in ("subagent", "true"):
+                                has_subagent_tag = True
+                                break
+
+        if not has_subagent_tag:
+            errors.append(Finding("specification-requires-the-subagent-generation-mode-marker", f"{doc_type} {filename} violates the Item-Level Subagent Context Isolation mandate. Specifications must be drafted strictly inside a context-isolated subagent with 'generation_mode: subagent' in the frontmatter or metadata table.", location=filename))
 
     def _validate_placeholders_and_links(
         self,
@@ -1469,8 +1525,6 @@ class UmlValidator(IValidator):
                     covered_interactions.add(inter_name)
                 elif re.search(rf"\b(?:interaction|Interaction|SysML\s+Interaction\s+Def)\s*:?\s*`?{re.escape(inter_name)}`?\b", content):
                     covered_interactions.add(inter_name)
-                elif re.search(rf"\b{re.escape(inter_name)}\b", content):
-                    covered_interactions.add(inter_name)
 
         # 4. Bidirectional Check: SysML interaction realization
         for inter in all_interactions:
@@ -1609,7 +1663,7 @@ class UmlValidator(IValidator):
         user_stories_dir_rel = getattr(backlog_dirs, "user_stories", None)
         user_stories_dir = os.path.join(repo.workspace_dir, user_stories_dir_rel) if user_stories_dir_rel else os.path.join(repo.workspace_dir, "docs", "user-stories")
 
-        sysml_files, all_pkgs, all_parts, _, _, _, _, _, all_test_cases, all_requirements, errors = _load_all_sysml_elements_full(repo, schemas_dir)
+        sysml_files, all_pkgs, all_parts, _, _, _, _, all_constraints, all_test_cases, all_requirements, errors = _load_all_sysml_elements_full(repo, schemas_dir)
         if errors:
             return errors
         if not sysml_files:
@@ -1638,6 +1692,10 @@ class UmlValidator(IValidator):
                 reqs_by_id_or_name[r_name] = r
             if r_id:
                 reqs_by_id_or_name[r_id] = r
+        for c in all_constraints:
+            c_name = getattr(c, "name", "")
+            if c_name:
+                reqs_by_id_or_name[c_name] = c
 
         bound_test_cases: Set[str] = set()
 
@@ -1709,14 +1767,13 @@ class UmlValidator(IValidator):
                             location="user-stories"
                         ))
                     else:
-                        if reqs_by_id_or_name:
-                            for v_req in verified_reqs:
-                                if v_req not in reqs_by_id_or_name:
-                                    errors.append(Finding(
-                                        "test-case-verify-requirement-invalid",
-                                        f"User Story '{filename}': Test case def '{tc_name}' specifies verify requirement '{v_req}' which is not defined in SysML AST.",
-                                        location="user-stories"
-                                    ))
+                        for v_req in verified_reqs:
+                            if v_req not in reqs_by_id_or_name:
+                                errors.append(Finding(
+                                    "test-case-verify-requirement-invalid",
+                                    f"User Story '{filename}': Test case def '{tc_name}' specifies verify requirement '{v_req}' which is not defined in SysML AST.",
+                                    location="user-stories"
+                                ))
 
         # Bidirectional Check: SysML test cases bound across User Stories
         for tc in all_test_cases:

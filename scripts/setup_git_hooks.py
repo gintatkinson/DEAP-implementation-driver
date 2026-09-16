@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
 Clean up Git hooks and whitelist pipeline infrastructure directories.
-Removes pre-commit and pre-push hooks to prevent auto-triggered compiler runs.
+Installs pre-commit hook and commit-msg hook (enforcing .pipeline/constitution.md:266).
+Removes pre-push hooks to prevent auto-triggered compiler runs.
 Appends whitelist rules to .gitignore and stages pipeline directories.
 """
 
+import argparse
 import os
 import subprocess
 import sys
@@ -13,6 +15,22 @@ INFRA_DIRS = ["/skills", "/rules", "/.pipeline", "/.agents", "/scripts"]
 WHITELIST_HEADER = "\n# Pipeline infrastructure (whitelisted by setup_git_hooks.py)\n"
 
 STAGE_DIRS = [".pipeline/", "skills/", "rules/", "scripts/", ".agents/"]
+
+
+def _purge_ds_store(repo_root):
+    """Recursively locate and delete all .DS_Store files in the repository."""
+    removed = 0
+    for root, _, files in os.walk(repo_root):
+        for f in files:
+            if f == ".DS_Store":
+                path = os.path.join(root, f)
+                try:
+                    os.remove(path)
+                    removed += 1
+                except OSError as e:
+                    print(f"Warning: Failed to remove .DS_Store at {path}: {e}", file=sys.stderr)
+    if removed:
+        print(f"Purged {removed} .DS_Store file{'s' if removed != 1 else ''} from repository")
 
 
 def _whitelist_infrastructure(repo_root):
@@ -24,7 +42,7 @@ def _whitelist_infrastructure(repo_root):
 
     git_dir = os.path.join(repo_root, ".git")
     if not os.path.isdir(git_dir) or not os.path.isfile(os.path.join(git_dir, "HEAD")):
-        print("Warning: not a git repository — skipping whitelist modifications", file=sys.stderr)
+        print("Warning: not a git repository -- skipping whitelist modifications", file=sys.stderr)
         return
 
     with open(gitignore_path, "r", encoding="utf-8") as f:
@@ -64,6 +82,8 @@ def setup_git_hooks():
     if not os.path.isdir(git_dir):
         print(f"Error: .git directory not found at {git_dir}", file=sys.stderr)
         sys.exit(1)
+
+    _purge_ds_store(repo_root)
         
     hooks_dir = os.path.join(git_dir, "hooks")
     errored = False
@@ -71,8 +91,14 @@ def setup_git_hooks():
     pre_commit_path = os.path.join(hooks_dir, "pre-commit")
     pre_commit_script = (
         "#!/bin/sh\n"
+        "set -e\n"
         "# Pre-commit hook: Subagent Output Integrity & Escape Tokens Gate (Mechanism 3 & 4)\n"
-        "python3 scripts/verify_subagent_output.py --dir docs\n"
+        "if [ -f scripts/verify_subagent_output.py ]; then\n"
+        "  python3 scripts/verify_subagent_output.py --dir docs\n"
+        "fi\n"
+        "if [ -f scripts/verify_downstream_baseline.py ]; then\n"
+        "  python3 scripts/verify_downstream_baseline.py\n"
+        "fi\n"
     )
     try:
         with open(pre_commit_path, "w", encoding="utf-8") as f:
@@ -81,6 +107,21 @@ def setup_git_hooks():
         print(f"Successfully installed Git pre-commit hook: {pre_commit_path}")
     except Exception as e:
         print(f"Error setting pre-commit hook: {e}", file=sys.stderr)
+        errored = True
+
+    commit_msg_path = os.path.join(hooks_dir, "commit-msg")
+    commit_msg_script = (
+        "#!/bin/sh\n"
+        "# Commit-msg hook: Reject auto-closing trigger keywords (.pipeline/constitution.md:266)\n"
+        'python3 scripts/verify_commit_messages.py --msg-file "$1"\n'
+    )
+    try:
+        with open(commit_msg_path, "w", encoding="utf-8") as f:
+            f.write(commit_msg_script)
+        os.chmod(commit_msg_path, 0o755)
+        print(f"Successfully installed Git commit-msg hook: {commit_msg_path}")
+    except Exception as e:
+        print(f"Error setting commit-msg hook: {e}", file=sys.stderr)
         errored = True
 
     pre_push_path = os.path.join(hooks_dir, "pre-push")
@@ -98,5 +139,24 @@ def setup_git_hooks():
     _whitelist_infrastructure(repo_root)
 
 
-if __name__ == "__main__":
+# Alias install_hooks to setup_git_hooks for API parity
+install_hooks = setup_git_hooks
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Clean up Git hooks and whitelist pipeline infrastructure directories."
+    )
+    parser.add_argument(
+        "--install",
+        action="store_true",
+        help="Install git hooks and whitelist infrastructure (default action)",
+    )
+    parser.parse_args()
+
     setup_git_hooks()
+
+
+if __name__ == "__main__":
+    main()
+
