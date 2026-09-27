@@ -180,6 +180,8 @@ def load_mandated_classes(destination):
 def main():
     parser = argparse.ArgumentParser(description="Verify a downstream project's baseline conformance.")
     parser.add_argument("--no-domain", action="store_true", help="Skip checking the domain model")
+    parser.add_argument("--strict", action="store_true", help="Fail closed on missing specification models or directories")
+    parser.add_argument("--allow-missing-specs", action="store_true", default=False, help="Explicitly allow missing specifications")
     parser.add_argument("--target", help="Target project directory", default=None)
     parser.add_argument("--output", help="Output JSON report file path", default=None)
     parser.add_argument("destination", nargs="?", default=".", help="Path to the downstream project directory (defaults to current directory)")
@@ -476,6 +478,25 @@ def check_latex_katex_syntax(repo_root):
                                 f"Bare alignment operator '&' outside alignment environment in {rel_path}: \"...{snippet}...\""
                             )
 
+    # Also run parity_auditor KatexValidator for comprehensive KaTeX integrity (table math, unescaped underscores, dangling operators)
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(script_dir)
+        parity_src = os.path.join(project_root, "skills", "spec-orchestrator", "parity_auditor", "src")
+        if parity_src not in sys.path:
+            sys.path.insert(0, parity_src)
+        from parity_auditor.validators.katex_validator import KatexValidator
+        from parity_auditor.core.workspace import WorkspaceRepository
+        repo = WorkspaceRepository(workspace_dir=repo_root)
+        katex_val = KatexValidator()
+        katex_findings = katex_val.validate(repo)
+        if katex_findings:
+            for kf in katex_findings:
+                errors.append(f"KaTeX validator finding: {kf}")
+    except Exception as e:
+        print(f"ERROR: Failed to execute KatexValidator: {e}", file=sys.stderr)
+        sys.exit(1)
+
     if errors:
         print("ERROR: Check 13 failed (KaTeX / LaTeX mathematical syntax violations found):", file=sys.stderr)
         for err in errors:
@@ -491,6 +512,17 @@ def check_downstream_instructions_exist(repo_root):
         sys.exit(1)
     if os.path.getsize(readme_path) == 0:
         print(f"ERROR: Check 14 failed: README.md is empty in repository root '{repo_root}'.", file=sys.stderr)
+        sys.exit(1)
+    with open(readme_path, "r", encoding="utf-8") as f:
+        readme_content = f.read()
+    if not (
+        "# Downstream Cyber-Physical Infrastructure Safety Project" in readme_content
+        or "Operator Prompt Catalog" in readme_content
+    ):
+        print(
+            f"ERROR: Check 14 failed: README.md in '{repo_root}' lacks canonical downstream content (missing '# Downstream Cyber-Physical Infrastructure Safety Project' or 'Operator Prompt Catalog').",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     agent_entrypoints = [
@@ -1039,7 +1071,11 @@ def check_fmeca_ast_coverage(content: str, model_text: Optional[str] = None) -> 
         if SysMLParser is not None:
             try:
                 pkg_obj = SysMLParser.parse_text(model_text)
-                expected_parts = [p.name for p in pkg_obj.get_all_parts()]
+                ACTOR_PATTERNS = re.compile(r'(?:Crew|Operator|Pilot|Actor|Target|Entity|Environment)$', re.IGNORECASE)
+                expected_parts = [
+                    p.name for p in pkg_obj.get_all_parts()
+                    if not getattr(p, "is_actor", False) and not ACTOR_PATTERNS.search(p.name)
+                ]
                 table_components = set(fmeca_data["components"].keys())
                 missing_parts = []
                 incomplete_parts = []
@@ -1725,7 +1761,12 @@ def validate_safety_matrix_ast(content: str, model_text: Optional[str] = None) -
             errors.append(f"Safety AST violation: Failed to parse SysML v2 model ({exc}).")
             broken = ASTValidationReport(is_conforming=False, syntax_errors=[str(exc)])
             return errors, broken, None
-        expected_actions = sorted({str(name) for name in model_ast.get("action_defs", [])})
+        all_actions = model_ast.get("action_defs", [])
+        op_activities = set(model_ast.get("operational_activities", []))
+        expected_actions = sorted({
+            str(name) for name in all_actions
+            if name not in op_activities and not re.search(r'\bOA[-_]?\d+', str(name), re.IGNORECASE)
+        })
         expected_parts = sorted({str(name) for name in model_ast.get("part_defs", [])})
         sysml_reqs = model_ast.get("requirement_defs", [])
 
@@ -1996,7 +2037,7 @@ def _validate_safety_matrix_pillars(
 
     return errors
 
-def check_safety_integrity_and_sora_completeness(repo_root):
+def check_safety_integrity_and_sora_completeness(repo_root=None, allow_missing_specs=False, strict=False):
     """Check 17: Safety Integrity Quality Gate and SORA OSO-01..24 Completeness Verification.
 
     Validates:
@@ -2013,10 +2054,14 @@ def check_safety_integrity_and_sora_completeness(repo_root):
        - ASTM F3269-17 Run-Time Assurance (RTA) architecture
        - MATLAB / Simulink / Stateflow model integration baseline hooks.
     """
+    if repo_root is None:
+        repo_root = os.getcwd()
     upstream_marker = os.path.join(repo_root, ".pipeline", "upstream")
     safety_dir = os.path.join(repo_root, "docs", "safety")
 
-    if os.path.isdir(upstream_marker):
+    is_upstream = os.path.isdir(upstream_marker) or os.path.isfile(upstream_marker) or (os.environ.get("DEAP_REPOSITORY_TYPE") == "UPSTREAM_SPEC_CORE_COMPILER")
+
+    if is_upstream:
         if os.path.isdir(safety_dir):
             allowed_files = {".gitkeep", "README.md"}
             violations = []
@@ -2033,8 +2078,14 @@ def check_safety_integrity_and_sora_completeness(repo_root):
         return
 
     # Downstream repository validation
+    is_strict = strict or (os.environ.get("DEAP_STRICT_BASELINE", "").lower() in ("1", "true", "yes"))
+    effective_allow_missing = allow_missing_specs and not is_strict
+
     if not os.path.isdir(safety_dir):
-        print("Success: Check 17 verified (Downstream repository detected -- docs/safety/ directory not present).")
+        if not effective_allow_missing:
+            print("ERROR: Check 17 failed: Safety specification directory 'docs/safety/' is missing.", file=sys.stderr)
+            sys.exit(1)
+        print("Success: Check 17 verified (Downstream repository detected -- safety specifications pending or clean).")
         return
 
     safety_files = []
@@ -2045,6 +2096,9 @@ def check_safety_integrity_and_sora_completeness(repo_root):
                 safety_files.append(os.path.join(root, f))
 
     if not safety_files:
+        if not effective_allow_missing:
+            print("ERROR: Check 17 failed: No safety specifications found in 'docs/safety/'.", file=sys.stderr)
+            sys.exit(1)
         print("Success: Check 17 verified (Downstream repository detected -- safety specifications pending or clean).")
         return
 
@@ -2440,7 +2494,7 @@ def check_domain_agnostic_ast_cleanliness(repo_root):
 
     print("Success: Check 19 verified (Domain-Agnostic AST Cleanliness & Closed-Grammar Metamodel Gate passed -- pure dynamic schema AST architecture verified).")
 
-def _check_wbs_suite_integrity(repo_root):
+def _check_wbs_suite_integrity(repo_root=None, allow_missing_specs=False, strict=False):
     """Check 20: WBS & Enterprise Deliverables Suite Validation.
 
     Verify that when docs/management/WBS_DELIVERABLES_SUITE.md exists:
@@ -2450,8 +2504,18 @@ def _check_wbs_suite_integrity(repo_root):
     - All intra-document markdown hyperlinks in WBS_DELIVERABLES_SUITE.md resolve to existing files on disk
     - Zero Unicode em dashes (\\u2014) exist in any management deliverable.
     """
+    if repo_root is None:
+        repo_root = os.getcwd()
+    upstream_marker = os.path.join(repo_root, ".pipeline", "upstream")
+    is_upstream = os.path.isdir(upstream_marker) or os.path.isfile(upstream_marker) or (os.environ.get("DEAP_REPOSITORY_TYPE") == "UPSTREAM_SPEC_CORE_COMPILER")
+
     wbs_md = os.path.join(repo_root, "docs", "management", "WBS_DELIVERABLES_SUITE.md")
     if not os.path.isfile(wbs_md):
+        is_strict = strict or (os.environ.get("DEAP_STRICT_BASELINE", "").lower() in ("1", "true", "yes"))
+        effective_allow_missing = allow_missing_specs and not is_strict
+        if not is_upstream and not effective_allow_missing:
+            print("ERROR: Check 20 failed: WBS & Enterprise Deliverables Suite ('docs/management/WBS_DELIVERABLES_SUITE.md') is missing in downstream customer mode.", file=sys.stderr)
+            sys.exit(1)
         print("Success: Check 20 verified (WBS & Enterprise Deliverables Suite pending or not present).")
         return
 
@@ -2617,7 +2681,7 @@ check_wbs_suite_integrity = _check_wbs_suite_integrity
 
 
 def _load_semantic_diagram_validator():
-    """Import SemanticDiagramASTValidator and WorkspaceRepository fail-safe."""
+    """Import SemanticDiagramASTValidator and WorkspaceRepository fail-closed."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
     spec_dir = os.path.join(project_root, "skills", "spec-orchestrator", "scripts")
@@ -2630,8 +2694,9 @@ def _load_semantic_diagram_validator():
         from parity_auditor.validators.semantic_diagram_ast_validator import SemanticDiagramASTValidator
         from parity_auditor.core.workspace import WorkspaceRepository
         return SemanticDiagramASTValidator, WorkspaceRepository
-    except Exception:
-        return None, None
+    except Exception as e:
+        print(f"ERROR: Failed to load SemanticDiagramASTValidator: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def check_semantic_diagram_ast_parity(repo_root=None):
@@ -2651,8 +2716,8 @@ def check_semantic_diagram_ast_parity(repo_root=None):
 
     val_cls, repo_cls = _load_semantic_diagram_validator()
     if val_cls is None or repo_cls is None:
-        print("WARNING: Check 21 skipped (SemanticDiagramASTValidator or WorkspaceRepository unavailable).", file=sys.stderr)
-        return
+        print("ERROR: Check 21 failed: SemanticDiagramASTValidator or WorkspaceRepository unavailable.", file=sys.stderr)
+        sys.exit(1)
 
     repo = repo_cls(workspace_dir=repo_root)
     validator = val_cls(workspace_repo=repo)
@@ -2664,7 +2729,11 @@ def check_semantic_diagram_ast_parity(repo_root=None):
     # Filter out compiler architecture blueprints (governed by Check 18, not downstream AST parity)
     target_scan_dirs = [d for d in target_scan_dirs if "blueprints" not in d.replace("\\", "/").split("/")]
     scan_dirs = [d for d in target_scan_dirs if os.path.isdir(os.path.join(repo_root, d))]
-    findings = validator.validate(repo, scan_dirs=scan_dirs)
+    try:
+        findings = validator.validate(repo, scan_dirs=scan_dirs)
+    except Exception as e:
+        print(f"ERROR: Check 21 execution failed: {e}", file=sys.stderr)
+        sys.exit(1)
 
     if findings:
         print("ERROR: Check 21 failed (Semantic Diagram-to-AST Topology Parity Gate violations found):", file=sys.stderr)
@@ -2719,7 +2788,7 @@ check_diagram_to_ast_parity = check_semantic_diagram_ast_parity
 
 
 def _load_semantic_prose_validator():
-    """Import SemanticProseInvariantValidator and WorkspaceRepository fail-safe."""
+    """Import SemanticProseInvariantValidator and WorkspaceRepository fail-closed."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
     spec_dir = os.path.join(project_root, "skills", "spec-orchestrator", "scripts")
@@ -2732,8 +2801,9 @@ def _load_semantic_prose_validator():
         from parity_auditor.validators.semantic_prose_invariant_validator import SemanticProseInvariantValidator
         from parity_auditor.core.workspace import WorkspaceRepository
         return SemanticProseInvariantValidator, WorkspaceRepository
-    except Exception:
-        return None, None
+    except Exception as e:
+        print(f"ERROR: Failed to load SemanticProseInvariantValidator: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def check_semantic_prose_invariants(repo_root=None):
@@ -2754,12 +2824,16 @@ def check_semantic_prose_invariants(repo_root=None):
 
     val_cls, repo_cls = _load_semantic_prose_validator()
     if val_cls is None or repo_cls is None:
-        print("WARNING: Check 22 skipped (SemanticProseInvariantValidator or WorkspaceRepository unavailable).", file=sys.stderr)
-        return
+        print("ERROR: Check 22 failed: SemanticProseInvariantValidator or WorkspaceRepository unavailable.", file=sys.stderr)
+        sys.exit(1)
 
     repo = repo_cls(workspace_dir=repo_root)
     validator = val_cls(workspace_repo=repo)
-    findings = validator.validate(repo, scan_dirs=["docs"])
+    try:
+        findings = validator.validate(repo, scan_dirs=["docs"])
+    except Exception as e:
+        print(f"ERROR: Check 22 execution failed: {e}", file=sys.stderr)
+        sys.exit(1)
 
     if findings:
         print("ERROR: Check 22 failed (Physical Invariant Semantic Prose Gate violations found):", file=sys.stderr)
@@ -2771,7 +2845,7 @@ def check_semantic_prose_invariants(repo_root=None):
 
 
 def _load_factual_grounding_validator():
-    """Import FactualGroundingValidator and WorkspaceRepository fail-safe."""
+    """Import FactualGroundingValidator and WorkspaceRepository fail-closed."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
     spec_dir = os.path.join(project_root, "skills", "spec-orchestrator", "scripts")
@@ -2784,11 +2858,12 @@ def _load_factual_grounding_validator():
         from parity_auditor.validators.factual_grounding_validator import FactualGroundingValidator
         from parity_auditor.core.workspace import WorkspaceRepository
         return FactualGroundingValidator, WorkspaceRepository
-    except Exception:
-        return None, None
+    except Exception as e:
+        print(f"ERROR: Failed to load FactualGroundingValidator: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
-def check_factual_grounding(repo_root=None):
+def check_factual_grounding(repo_root=None, allow_missing_specs=False, strict=False):
     """Check 23: Factual Grounding & Numeric Provenance Gate.
 
     Verify that structural descriptors, control surface counts, numeric limits,
@@ -2798,21 +2873,33 @@ def check_factual_grounding(repo_root=None):
     if repo_root is None:
         repo_root = os.getcwd()
 
+    upstream_marker = os.path.join(repo_root, ".pipeline", "upstream")
+    is_upstream = os.path.isdir(upstream_marker) or os.path.isfile(upstream_marker) or (os.environ.get("DEAP_REPOSITORY_TYPE") == "UPSTREAM_SPEC_CORE_COMPILER")
+
     model_text = _discover_sysml_model_text(repo_root)
     schema_dir = os.path.join(repo_root, "schema")
     has_extracted = os.path.isdir(os.path.join(schema_dir, "extracted")) if os.path.isdir(schema_dir) else False
     if (not model_text or not model_text.strip()) and not has_extracted:
+        is_strict = strict or (os.environ.get("DEAP_STRICT_BASELINE", "").lower() in ("1", "true", "yes"))
+        effective_allow_missing = allow_missing_specs and not is_strict
+        if not is_upstream and not effective_allow_missing:
+            print("ERROR: Check 23 failed: SysML model or schema ground truth is missing in downstream customer mode.", file=sys.stderr)
+            sys.exit(1)
         print("Success: Check 23 verified (SysML model pending or landing zone clean).")
         return
 
     val_cls, repo_cls = _load_factual_grounding_validator()
     if val_cls is None or repo_cls is None:
-        print("WARNING: Check 23 skipped (FactualGroundingValidator or WorkspaceRepository unavailable).", file=sys.stderr)
-        return
+        print("ERROR: Check 23 failed: FactualGroundingValidator or WorkspaceRepository unavailable.", file=sys.stderr)
+        sys.exit(1)
 
     repo = repo_cls(workspace_dir=repo_root)
     validator = val_cls(workspace_repo=repo)
-    findings = validator.validate(repo, scan_dirs=["docs"])
+    try:
+        findings = validator.validate(repo, scan_dirs=["docs"])
+    except Exception as e:
+        print(f"ERROR: Check 23 execution failed: {e}", file=sys.stderr)
+        sys.exit(1)
 
     if findings:
         print("ERROR: Check 23 failed (Factual Grounding & Numeric Provenance Gate violations found):", file=sys.stderr)
@@ -2826,8 +2913,179 @@ def check_factual_grounding(repo_root=None):
 check_factual_grounding_and_provenance = check_factual_grounding
 
 
+def _load_icd_completeness_validator():
+    """Import ICDCompletenessValidator and WorkspaceRepository fail-closed."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    spec_dir = os.path.join(project_root, "skills", "spec-orchestrator", "scripts")
+    parity_src = os.path.join(project_root, "skills", "spec-orchestrator", "parity_auditor", "src")
+    scripts_dir = os.path.join(project_root, "scripts")
+    for p in (scripts_dir, spec_dir, parity_src):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    try:
+        from parity_auditor.validators.icd_completeness_validator import ICDCompletenessValidator
+        from parity_auditor.core.workspace import WorkspaceRepository
+        return ICDCompletenessValidator, WorkspaceRepository
+    except Exception as e:
+        print(f"ERROR: Failed to load ICDCompletenessValidator: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def check_icd_completeness(repo_root=None):
+    """Check 23B: Level 1C ICD Completeness & Signal Flow Parity Gate.
+
+    Verify 100% topological port contract parity, zero dangling ports, and signal dictionary completeness.
+    """
+    if repo_root is None:
+        repo_root = os.getcwd()
+
+    schema_dir = os.path.join(repo_root, "schema")
+    model_text = _discover_sysml_model_text(repo_root)
+    has_extracted = os.path.isdir(os.path.join(schema_dir, "extracted")) if os.path.isdir(schema_dir) else False
+    if (not model_text or not model_text.strip()) and not has_extracted:
+        print("Success: Level 1C ICD Completeness verified (SysML model pending or landing zone clean).")
+        return
+
+    upstream_marker = os.path.join(repo_root, ".pipeline", "upstream")
+    interfaces_dir = os.path.join(repo_root, "docs", "interfaces")
+    if not os.path.isdir(upstream_marker):
+        if not os.path.isdir(interfaces_dir):
+            print("Success: Level 1C ICD Completeness verified (Downstream repository detected -- docs/interfaces/ directory not present).")
+            return
+        has_icd = any(f.endswith(".md") and "ICD" in f for f in os.listdir(interfaces_dir))
+        if not has_icd:
+            print("Success: Level 1C ICD Completeness verified (Downstream repository detected -- Level 1C ICD specifications pending).")
+            return
+
+    val_cls, repo_cls = _load_icd_completeness_validator()
+    if val_cls is None or repo_cls is None:
+        print("ERROR: ICD Completeness failed: ICDCompletenessValidator or WorkspaceRepository unavailable.", file=sys.stderr)
+        sys.exit(1)
+
+    repo = repo_cls(workspace_dir=repo_root)
+    validator = val_cls()
+    try:
+        findings = validator.validate(repo, schemas_dir=schema_dir)
+    except Exception as e:
+        print(f"ERROR: ICD Completeness execution failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if findings:
+        print("ERROR: ICD Completeness failed (Interface & Signal Dictionary violations found):", file=sys.stderr)
+        for f in findings:
+            print(f"  - {f}", file=sys.stderr)
+        sys.exit(1)
+
+    print("Success: Level 1C ICD Completeness verified (zero dangling ports, 100% port contract parity).")
+
+
+def _load_operational_allocation_validator():
+    """Import OperationalAllocationValidator and WorkspaceRepository fail-closed."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    spec_dir = os.path.join(project_root, "skills", "spec-orchestrator", "scripts")
+    parity_src = os.path.join(project_root, "skills", "spec-orchestrator", "parity_auditor", "src")
+    scripts_dir = os.path.join(project_root, "scripts")
+    for p in (scripts_dir, spec_dir, parity_src):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    try:
+        from parity_auditor.validators.operational_allocation_validator import OperationalAllocationValidator
+        from parity_auditor.core.workspace import WorkspaceRepository
+        return OperationalAllocationValidator, WorkspaceRepository
+    except Exception as e:
+        print(f"ERROR: Failed to load OperationalAllocationValidator: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def check_operational_allocation(repo_root=None):
+    """Check 24: Operational-to-Resource Allocation Gate (Gate 24).
+
+    Validates operational activity to system resource allocation (/// OperationalAllocation: [...]).
+    """
+    if repo_root is None:
+        repo_root = os.getcwd()
+
+    val_cls, repo_cls = _load_operational_allocation_validator()
+    if val_cls is None or repo_cls is None:
+        print("ERROR: Check 24 failed: OperationalAllocationValidator or WorkspaceRepository unavailable.", file=sys.stderr)
+        sys.exit(1)
+
+    repo = repo_cls(workspace_dir=repo_root)
+    validator = val_cls()
+    try:
+        findings = validator.validate(repo, allow_missing_specs=True)
+    except Exception as e:
+        print(f"ERROR: Check 24 execution failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if findings:
+        print("ERROR: Check 24 failed (Operational-to-Resource Allocation violations found):", file=sys.stderr)
+        for f in findings:
+            print(f"  - {f}", file=sys.stderr)
+        sys.exit(1)
+
+    print("Success: Check 24 verified (Operational-to-Resource Allocation passed -- zero orphan activities or phantom allocation tags).")
+
+
+check_operational_allocation_gate = check_operational_allocation
+
+
+def _load_standards_measurement_validator():
+    """Import StandardsAndMeasurementValidator and WorkspaceRepository fail-closed."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    spec_dir = os.path.join(project_root, "skills", "spec-orchestrator", "scripts")
+    parity_src = os.path.join(project_root, "skills", "spec-orchestrator", "parity_auditor", "src")
+    scripts_dir = os.path.join(project_root, "scripts")
+    for p in (scripts_dir, spec_dir, parity_src):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    try:
+        from parity_auditor.validators.standards_measurement_validator import StandardsAndMeasurementValidator
+        from parity_auditor.core.workspace import WorkspaceRepository
+        return StandardsAndMeasurementValidator, WorkspaceRepository
+    except Exception as e:
+        print(f"ERROR: Failed to load StandardsAndMeasurementValidator: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def check_standards_measurement(repo_root=None):
+    """Check 25: Standards & SI 7-Dimensional Parameter Metrology Gate (Gate 25).
+
+    Validates ISO 80000 / SI 7-dimensional parameter metrology, value bounds, and unit traceability.
+    """
+    if repo_root is None:
+        repo_root = os.getcwd()
+
+    val_cls, repo_cls = _load_standards_measurement_validator()
+    if val_cls is None or repo_cls is None:
+        print("ERROR: Check 25 failed: StandardsAndMeasurementValidator or WorkspaceRepository unavailable.", file=sys.stderr)
+        sys.exit(1)
+
+    repo = repo_cls(workspace_dir=repo_root)
+    validator = val_cls()
+    try:
+        findings = validator.validate(repo)
+    except Exception as e:
+        print(f"ERROR: Check 25 execution failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if findings:
+        print("ERROR: Check 25 failed (Standards & SI 7D Parameter Metrology violations found):", file=sys.stderr)
+        for f in findings:
+            print(f"  - {f}", file=sys.stderr)
+        sys.exit(1)
+
+    print("Success: Check 25 verified (Standards & SI 7D Parameter Metrology passed -- all parameter dimensions, units, and SDO baselines valid).")
+
+
+check_standards_measurement_gate = check_standards_measurement
+
+
 def _load_cross_document_diagram_validator():
-    """Import validate_cross_document_diagram_parity and WorkspaceRepository fail-safe."""
+    """Import validate_cross_document_diagram_parity and WorkspaceRepository fail-closed."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
     spec_dir = os.path.join(project_root, "skills", "spec-orchestrator", "scripts")
@@ -2843,12 +3101,13 @@ def _load_cross_document_diagram_validator():
         )
         from parity_auditor.core.workspace import WorkspaceRepository
         return validate_cross_document_diagram_parity, CrossDocumentDiagramParityValidator, WorkspaceRepository
-    except Exception:
-        return None, None, None
+    except Exception as e:
+        print(f"ERROR: Failed to load CrossDocumentDiagramParityValidator: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def check_cross_document_diagram_parity(repo_root=None):
-    """Check 25: Cross-Document Diagram Parity Gate.
+    """Check 25B: Cross-Document Diagram Parity Gate.
 
     Verify that Mermaid architecture diagrams (e.g. DoDAF SV-1 System Interface Block Diagrams)
     replicated across docs/conops/CONOPS.md and executive reports in docs/reports/ maintain
@@ -2859,10 +3118,14 @@ def check_cross_document_diagram_parity(repo_root=None):
 
     fn, val_cls, repo_cls = _load_cross_document_diagram_validator()
     if fn is None:
-        print("WARNING: Check 25 skipped (validate_cross_document_diagram_parity unavailable).", file=sys.stderr)
-        return
+        print("ERROR: Check 25 failed: validate_cross_document_diagram_parity unavailable.", file=sys.stderr)
+        sys.exit(1)
 
-    findings = fn(repo_root)
+    try:
+        findings = fn(repo_root)
+    except Exception as e:
+        print(f"ERROR: Check 25 execution failed: {e}", file=sys.stderr)
+        sys.exit(1)
 
     if findings:
         print("ERROR: Check 25 failed (Cross-Document Diagram Parity Gate violations found):", file=sys.stderr)
@@ -2876,8 +3139,136 @@ def check_cross_document_diagram_parity(repo_root=None):
 check_cross_document_diagram_parity_gate = check_cross_document_diagram_parity
 
 
+def _load_conops_and_mission_intent_validators():
+    """Import ConopsCompletenessValidator, MissionIntentCompletenessValidator and WorkspaceRepository fail-closed."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    spec_dir = os.path.join(project_root, "skills", "spec-orchestrator", "scripts")
+    parity_src = os.path.join(project_root, "skills", "spec-orchestrator", "parity_auditor", "src")
+    scripts_dir = os.path.join(project_root, "scripts")
+    for p in (scripts_dir, spec_dir, parity_src):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    try:
+        from parity_auditor.validators.conops_completeness_validator import (
+            ConopsCompletenessValidator,
+            MissionIntentCompletenessValidator,
+        )
+        from parity_auditor.core.workspace import WorkspaceRepository
+        return ConopsCompletenessValidator, MissionIntentCompletenessValidator, WorkspaceRepository
+    except Exception as e:
+        print(f"ERROR: Failed to load ConOps/MissionIntent validators: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def check_conops_and_mission_intent_completeness(repo_root=None):
+    """Check 26: ConOps & Mission Intent Completeness Gate (Gate 26).
+
+    Validates 10-12 mandatory ConOps sections and METL roster completeness (ISO 29148 / NATO STANAG 4586 / OMG UAF).
+    """
+    if repo_root is None:
+        repo_root = os.getcwd()
+
+    upstream_marker = os.path.join(repo_root, ".pipeline", "upstream")
+    conops_dir = os.path.join(repo_root, "docs", "conops")
+    if not os.path.isdir(upstream_marker):
+        if not os.path.isdir(conops_dir):
+            print("Success: Check 26 verified (Downstream repository detected -- docs/conops/ directory not present).")
+            return
+        conops_files = []
+        for root, dirs, files in os.walk(conops_dir):
+            dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS and d not in ("defects", "audits", "decisions")]
+            for f in files:
+                if f.endswith(".md") and f != "README.md" and "TEMPLATE" not in f.upper():
+                    conops_files.append(os.path.join(root, f))
+        if not conops_files:
+            print("Success: Check 26 verified (Downstream repository detected -- ConOps & Mission Intent pending or clean).")
+            return
+
+    conops_cls, mission_cls, repo_cls = _load_conops_and_mission_intent_validators()
+    if conops_cls is None or mission_cls is None or repo_cls is None:
+        print("ERROR: Check 26 failed: Conops/MissionIntent validators unavailable.", file=sys.stderr)
+        sys.exit(1)
+
+    repo = repo_cls(workspace_dir=repo_root)
+    findings = []
+    conops_val = conops_cls()
+    try:
+        findings.extend(conops_val.validate(repo))
+    except Exception as e:
+        print(f"ERROR: Check 26 ConOps execution failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    mission_val = mission_cls()
+    try:
+        findings.extend(mission_val.validate(repo))
+    except Exception as e:
+        print(f"ERROR: Check 26 Mission Intent execution failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if findings:
+        print("ERROR: Check 26 failed (ConOps & Mission Intent Completeness violations found):", file=sys.stderr)
+        for f in findings:
+            print(f"  - {f}", file=sys.stderr)
+        sys.exit(1)
+
+    print("Success: Check 26 verified (ConOps & Mission Intent Completeness passed -- all mandatory sections, tables, and METL rosters valid).")
+
+
+check_conops_and_mission_intent = check_conops_and_mission_intent_completeness
+
+
+def _load_research_inventory_validator():
+    """Import ResearchInventoryValidator and WorkspaceRepository fail-closed."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    spec_dir = os.path.join(project_root, "skills", "spec-orchestrator", "scripts")
+    parity_src = os.path.join(project_root, "skills", "spec-orchestrator", "parity_auditor", "src")
+    scripts_dir = os.path.join(project_root, "scripts")
+    for p in (scripts_dir, spec_dir, parity_src):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    try:
+        from parity_auditor.validators.research_inventory_validator import ResearchInventoryValidator
+        from parity_auditor.core.workspace import WorkspaceRepository
+        return ResearchInventoryValidator, WorkspaceRepository
+    except Exception as e:
+        print(f"ERROR: Failed to load ResearchInventoryValidator: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def check_research_inventory(repo_root=None):
+    """Check 27: Cited Research Inventory & Declared-Total Population Register Gate (Gate 27).
+
+    Validates presence, schema structure, clause citations, and declared-total population arithmetic.
+    """
+    if repo_root is None:
+        repo_root = os.getcwd()
+
+    val_cls, repo_cls = _load_research_inventory_validator()
+    if val_cls is None or repo_cls is None:
+        print("ERROR: Check 27 failed: ResearchInventoryValidator or WorkspaceRepository unavailable.", file=sys.stderr)
+        sys.exit(1)
+
+    repo = repo_cls(workspace_dir=repo_root)
+    validator = val_cls()
+    try:
+        findings = validator.validate(repo)
+    except Exception as e:
+        print(f"ERROR: Check 27 execution failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if findings:
+        print("ERROR: Check 27 failed (Cited Research Inventory violations found):", file=sys.stderr)
+        for f in findings:
+            print(f"  - {f}", file=sys.stderr)
+        sys.exit(1)
+
+    print("Success: Check 27 verified (Cited Research Inventory & Declared-Total Population Register passed).")
+
+
 def _load_executive_deliverable_traceability_validator():
-    """Import validate_executive_deliverable_traceability fail-safe."""
+    """Import validate_executive_deliverable_traceability fail-closed."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
     spec_dir = os.path.join(project_root, "skills", "spec-orchestrator", "scripts")
@@ -2893,12 +3284,13 @@ def _load_executive_deliverable_traceability_validator():
         )
         from parity_auditor.core.workspace import WorkspaceRepository
         return validate_executive_deliverable_traceability, ExecutiveDeliverableTraceabilityValidator, WorkspaceRepository
-    except Exception:
-        return None, None, None
+    except Exception as e:
+        print(f"ERROR: Failed to load ExecutiveDeliverableTraceabilityValidator: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def check_executive_deliverable_traceability(repo_root=None):
-    """Check 27: Executive Deliverable Traceability & Completeness Gate.
+    """Check 27B: Executive Deliverable Traceability & Completeness Gate.
 
     Verify that executive engineering deliverables in docs/reports/ and docs/management/
     maintain strict traceability back to the SysML SSOT model, schema documents, or
@@ -2910,10 +3302,14 @@ def check_executive_deliverable_traceability(repo_root=None):
 
     fn, val_cls, repo_cls = _load_executive_deliverable_traceability_validator()
     if fn is None:
-        print("WARNING: Check 27 skipped (validate_executive_deliverable_traceability unavailable).", file=sys.stderr)
-        return
+        print("ERROR: Check 27 failed: validate_executive_deliverable_traceability unavailable.", file=sys.stderr)
+        sys.exit(1)
 
-    findings = fn(repo_root)
+    try:
+        findings = fn(repo_root)
+    except Exception as e:
+        print(f"ERROR: Check 27 execution failed: {e}", file=sys.stderr)
+        sys.exit(1)
 
     if findings:
         print("ERROR: Check 27 failed (Executive Deliverable Traceability Gate violations found):", file=sys.stderr)
@@ -2927,30 +3323,381 @@ def check_executive_deliverable_traceability(repo_root=None):
 check_executive_deliverable_traceability_gate = check_executive_deliverable_traceability
 
 
-def run_all_checks(repo_root=None):
-    """Run all baseline checks (Checks 10 through 27)."""
+def _load_coverage_digest_validator():
+    """Import CoverageDigestValidator and WorkspaceRepository fail-closed."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    spec_dir = os.path.join(project_root, "skills", "spec-orchestrator", "scripts")
+    parity_src = os.path.join(project_root, "skills", "spec-orchestrator", "parity_auditor", "src")
+    scripts_dir = os.path.join(project_root, "scripts")
+    for p in (scripts_dir, spec_dir, parity_src):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    try:
+        from parity_auditor.validators.coverage_digest_validator import CoverageDigestValidator
+        from parity_auditor.core.workspace import WorkspaceRepository
+        return CoverageDigestValidator, WorkspaceRepository
+    except Exception as e:
+        print(f"ERROR: Failed to load CoverageDigestValidator: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def check_coverage_digest(repo_root=None):
+    """Check 28: Coverage-Digest Population Gate (Gate 28).
+
+    Validates declared population obligations against realized specifications and zero phantom obligations.
+    """
     if repo_root is None:
         repo_root = os.getcwd()
+
+    val_cls, repo_cls = _load_coverage_digest_validator()
+    if val_cls is None or repo_cls is None:
+        print("ERROR: Check 28 failed: CoverageDigestValidator or WorkspaceRepository unavailable.", file=sys.stderr)
+        sys.exit(1)
+
+    repo = repo_cls(workspace_dir=repo_root)
+    validator = val_cls()
+    try:
+        findings = validator.validate(repo, allow_missing_specs=True)
+    except Exception as e:
+        print(f"ERROR: Check 28 execution failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if findings:
+        print("ERROR: Check 28 failed (Coverage Digest violations found):", file=sys.stderr)
+        for f in findings:
+            print(f"  - {f}", file=sys.stderr)
+        sys.exit(1)
+
+    print("Success: Check 28 verified (Coverage-Digest Population Gate passed -- zero phantom realizations).")
+
+
+check_coverage_digest_gate = check_coverage_digest
+
+
+def _load_obligation_witness_validator():
+    """Import ObligationWitnessValidator and WorkspaceRepository fail-closed."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    spec_dir = os.path.join(project_root, "skills", "spec-orchestrator", "scripts")
+    parity_src = os.path.join(project_root, "skills", "spec-orchestrator", "parity_auditor", "src")
+    scripts_dir = os.path.join(project_root, "scripts")
+    for p in (scripts_dir, spec_dir, parity_src):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    try:
+        from parity_auditor.validators.obligation_witness_validator import ObligationWitnessValidator
+        from parity_auditor.core.workspace import WorkspaceRepository
+        return ObligationWitnessValidator, WorkspaceRepository
+    except Exception as e:
+        print(f"ERROR: Failed to load ObligationWitnessValidator: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def check_obligation_witness(repo_root=None):
+    """Check 29: Obligation-Witness Registry Gate (Gate 29).
+
+    Validates multi-dimensional obligation witness registry and asserts zero phantom witnesses.
+    """
+    if repo_root is None:
+        repo_root = os.getcwd()
+
+    val_cls, repo_cls = _load_obligation_witness_validator()
+    if val_cls is None or repo_cls is None:
+        print("ERROR: Check 29 failed: ObligationWitnessValidator or WorkspaceRepository unavailable.", file=sys.stderr)
+        sys.exit(1)
+
+    repo = repo_cls(workspace_dir=repo_root)
+    validator = val_cls()
+    try:
+        findings = validator.validate(repo, allow_missing_specs=True, spec_only=True)
+    except Exception as e:
+        print(f"ERROR: Check 29 execution failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if findings:
+        print("ERROR: Check 29 failed (Obligation Witness Registry violations found):", file=sys.stderr)
+        for f in findings:
+            print(f"  - {f}", file=sys.stderr)
+        sys.exit(1)
+
+    print("Success: Check 29 verified (Obligation-Witness Registry Gate passed -- zero phantom witnesses).")
+
+
+check_obligation_witness_gate = check_obligation_witness
+
+
+def _load_architecture_viewpoint_validator():
+    """Import ArchitectureViewpointValidator and WorkspaceRepository fail-closed."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    spec_dir = os.path.join(project_root, "skills", "spec-orchestrator", "scripts")
+    parity_src = os.path.join(project_root, "skills", "spec-orchestrator", "parity_auditor", "src")
+    scripts_dir = os.path.join(project_root, "scripts")
+    for p in (scripts_dir, spec_dir, parity_src):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    try:
+        from parity_auditor.validators.architecture_viewpoint_validator import ArchitectureViewpointValidator
+        from parity_auditor.core.workspace import WorkspaceRepository
+        return ArchitectureViewpointValidator, WorkspaceRepository
+    except Exception as e:
+        print(f"ERROR: Failed to load ArchitectureViewpointValidator: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def check_architecture_viewpoint_diagrams(repo_root=None, allow_missing_specs=False, strict=False):
+    """Check 30: Architecture Viewpoint & Diagram Completeness Gate (Gate 30).
+
+    Validates presence, completeness, and syntax integrity of the 11 canonical architecture diagrams across the 5 viewpoints (DoDAF 2.02 / OMG UAF v2.0 / ISO/IEC/IEEE 29148 / MIL-STD-882E / STPA / SORA).
+    """
+    if repo_root is None:
+        repo_root = os.getcwd()
+
+    val_cls, repo_cls = _load_architecture_viewpoint_validator()
+    if val_cls is None or repo_cls is None:
+        print("ERROR: Check 30 failed: ArchitectureViewpointValidator or WorkspaceRepository unavailable.", file=sys.stderr)
+        sys.exit(1)
+
+    effective_allow_missing = allow_missing_specs and not (strict or (os.environ.get("DEAP_STRICT_BASELINE", "").lower() in ("1", "true", "yes")))
+
+    repo = repo_cls(workspace_dir=repo_root)
+    validator = val_cls()
+    try:
+        findings = validator.validate(repo, allow_missing_specs=effective_allow_missing, spec_only=True)
+    except Exception as e:
+        print(f"ERROR: Check 30 execution failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if findings:
+        print("ERROR: Check 30 failed (Architecture Viewpoint & Diagram Completeness violations found):", file=sys.stderr)
+        for f in findings:
+            print(f"  - {f}", file=sys.stderr)
+        sys.exit(1)
+
+    print("Success: Check 30 verified (Architecture Viewpoint & Diagram Completeness Gate passed -- all 11 canonical diagrams verified).")
+
+
+check_architecture_viewpoint = check_architecture_viewpoint_diagrams
+check_architecture_viewpoint_gate = check_architecture_viewpoint_diagrams
+
+
+def check_dual_schema_ssot_parity(repo_root=None):
+    """Check 31: Dual-Schema SSOT Parity Gate (Gate 31).
+
+    If both schema/*.sysml and .pipeline/schema.sysml exist in the workspace,
+    verify that they are identical in AST definitions:
+      - part def
+      - port def
+      - action def
+      - item def
+    preventing silent model drift between schema directories.
+    """
+    if repo_root is None:
+        repo_root = os.getcwd()
+
+    schema_dir = os.path.join(repo_root, "schema")
+    pipeline_schema = os.path.join(repo_root, ".pipeline", "schema.sysml")
+
+    schema_sysml_files = []
+    if os.path.isdir(schema_dir):
+        for name in sorted(os.listdir(schema_dir)):
+            if name.endswith(".sysml") and not name.startswith("."):
+                fpath = os.path.join(schema_dir, name)
+                if os.path.isfile(fpath) and os.path.getsize(fpath) > 0:
+                    schema_sysml_files.append(fpath)
+
+    has_pipeline_schema = os.path.isfile(pipeline_schema) and os.path.getsize(pipeline_schema) > 0
+    has_schema_files = len(schema_sysml_files) > 0
+
+    if not (has_schema_files and has_pipeline_schema):
+        print("Success: Check 31 verified (Dual-schema SSOT parity gate passed -- single schema or landing zone clean).")
+        return
+
+    schema_dir_content = ""
+    for fpath in schema_sysml_files:
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                schema_dir_content += f.read() + "\n\n"
+        except Exception as e:
+            print(f"ERROR: Check 31 failed: Unable to read {fpath}: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    try:
+        with open(pipeline_schema, "r", encoding="utf-8") as f:
+            pipeline_schema_content = f.read()
+    except Exception as e:
+        print(f"ERROR: Check 31 failed: Unable to read {pipeline_schema}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    parse_func = _load_sysml_parser()
+    if parse_func is None:
+        print("ERROR: Check 31 failed: SysML parser unavailable.", file=sys.stderr)
+        sys.exit(1)
+
+    ast_schema_dir = parse_func(schema_dir_content)
+    ast_pipeline = parse_func(pipeline_schema_content)
+
+    constructs_to_compare = [
+        ("part def", "part_defs", r'\bpart\s+(?:def\s+)?([a-zA-Z0-9_]+)'),
+        ("port def", "port_defs", r'\b(?:in|out|inout)?\s*port\s+(?:def\s+)?([a-zA-Z0-9_]+)'),
+        ("action def", "action_defs", r'\baction\s+(?:def\s+)?([a-zA-Z0-9_]+)'),
+        ("item def", "item_defs", r'\bitem\s+(?:def\s+)?([a-zA-Z0-9_]+)'),
+    ]
+
+    mismatches = []
+    for construct_label, ast_key, pattern in constructs_to_compare:
+        set_dir = set(ast_schema_dir.get(ast_key, []))
+        if pattern:
+            set_dir.update(re.findall(pattern, schema_dir_content))
+        set_pipe = set(ast_pipeline.get(ast_key, []))
+        if pattern:
+            set_pipe.update(re.findall(pattern, pipeline_schema_content))
+
+        missing_in_pipeline = set_dir - set_pipe
+        missing_in_schema_dir = set_pipe - set_dir
+
+        if missing_in_pipeline:
+            mismatches.append(
+                f"{construct_label} defined in schema/*.sysml but missing in .pipeline/schema.sysml: {sorted(missing_in_pipeline)}"
+            )
+        if missing_in_schema_dir:
+            mismatches.append(
+                f"{construct_label} defined in .pipeline/schema.sysml but missing in schema/*.sysml: {sorted(missing_in_schema_dir)}"
+            )
+
+    if mismatches:
+        print("ERROR: Check 31 failed (Dual-Schema SSOT Parity violations found -- schema drift detected):", file=sys.stderr)
+        for m in mismatches:
+            print(f"  - {m}", file=sys.stderr)
+        sys.exit(1)
+
+    print("Success: Check 31 verified (Dual-Schema SSOT Parity Gate passed -- schema/*.sysml and .pipeline/schema.sysml AST definitions are identical).")
+
+
+check_dual_schema_parity = check_dual_schema_ssot_parity
+check_dual_schema_ssot_parity_gate = check_dual_schema_ssot_parity
+
+
+def check_mermaid_syntax(repo_root=None):
+    """Check 13B: Mermaid Syntax & Ergonomics Gate.
+
+    Validates Mermaid syntax, unclosed code fences, semicolons in notes, curly braces in class members, and layout invariants across all markdown files.
+    """
+    if repo_root is None:
+        repo_root = os.getcwd()
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    parity_src = os.path.join(project_root, "skills", "spec-orchestrator", "parity_auditor", "src")
+    if parity_src not in sys.path:
+        sys.path.insert(0, parity_src)
+    try:
+        from parity_auditor.validators.mermaid_syntax_validator import MermaidSyntaxValidator
+        from parity_auditor.core.workspace import WorkspaceRepository
+    except Exception as e:
+        print(f"ERROR: Failed to load MermaidSyntaxValidator: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    repo = WorkspaceRepository(workspace_dir=repo_root)
+    validator = MermaidSyntaxValidator()
+    try:
+        findings = validator.validate(repo)
+    except Exception as e:
+        print(f"ERROR: MermaidSyntaxValidator execution failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if findings:
+        print("ERROR: Mermaid syntax violations found:", file=sys.stderr)
+        for f in findings:
+            print(f"  - {f}", file=sys.stderr)
+        sys.exit(1)
+    print("Success: Mermaid syntax verified across all markdown files.")
+
+
+def _has_clean_landing_zones(repo_root):
+    """Detect if repository has clean landing zones (clean schema or clean specification landing zones)."""
+    # 1. Schema landing zone check
+    schema_dir = os.path.join(repo_root, "schema")
+    schema_clean = True
+    if os.path.isdir(schema_dir):
+        for root, dirs, files in os.walk(schema_dir):
+            dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS]
+            for f in files:
+                if f not in (".gitkeep", "README.md") and not f.startswith("."):
+                    schema_clean = False
+                    break
+            if not schema_clean:
+                break
+
+    # 2. Specification landing zones check (epics, features, user-stories, use-cases)
+    spec_zones = [
+        os.path.join(repo_root, "docs", "epics"),
+        os.path.join(repo_root, "docs", "features"),
+        os.path.join(repo_root, "docs", "user-stories"),
+        os.path.join(repo_root, "docs", "use-cases"),
+    ]
+    has_concrete_specs = False
+    for szone in spec_zones:
+        if os.path.isdir(szone):
+            for root, dirs, files in os.walk(szone):
+                dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS]
+                for f in files:
+                    if f.endswith(".md") and f not in (".gitkeep", "README.md") and not f.startswith("."):
+                        has_concrete_specs = True
+                        break
+                if has_concrete_specs:
+                    break
+        if has_concrete_specs:
+            break
+    specs_clean = not has_concrete_specs
+
+    return schema_clean or specs_clean
+
+
+def run_all_checks(repo_root=None, allow_missing_specs=False, strict=False):
+    """Run all baseline checks (Checks 10 through 31)."""
+    if repo_root is None:
+        repo_root = os.getcwd()
+    is_strict = strict or (os.environ.get("DEAP_STRICT_BASELINE", "").lower() in ("1", "true", "yes"))
+    if not is_strict and not allow_missing_specs and _has_clean_landing_zones(repo_root):
+        allow_missing_specs = True
     check_gitignore_exists(repo_root)
     check_no_ds_store_files(repo_root)
     check_no_duplicate_master_blueprints(repo_root)
     check_latex_katex_syntax(repo_root)
+    check_mermaid_syntax(repo_root)
     check_downstream_instructions_exist(repo_root)
     check_reconcile_backlog_tooling_exists(repo_root)
     check_upstream_template_clean_landing_zones(repo_root)
-    check_safety_integrity_and_sora_completeness(repo_root)
+    check_safety_integrity_and_sora_completeness(repo_root, allow_missing_specs=allow_missing_specs, strict=strict)
     verify_upstream_blueprint_domain_cleanliness(repo_root)
     check_domain_agnostic_ast_cleanliness(repo_root)
-    check_wbs_suite_integrity(repo_root)
+    check_wbs_suite_integrity(repo_root, allow_missing_specs=allow_missing_specs, strict=strict)
+    # Mandatory Gates 21 through 31
     check_semantic_diagram_ast_parity(repo_root)
     check_semantic_prose_invariants(repo_root)
-    check_factual_grounding(repo_root)
+    check_factual_grounding(repo_root, allow_missing_specs=allow_missing_specs, strict=strict)
+    check_icd_completeness(repo_root)
+    check_operational_allocation(repo_root)
+    check_standards_measurement(repo_root)
     check_cross_document_diagram_parity(repo_root)
+    check_conops_and_mission_intent_completeness(repo_root)
+    check_research_inventory(repo_root)
     check_executive_deliverable_traceability(repo_root)
+    check_coverage_digest(repo_root)
+    check_obligation_witness(repo_root)
+    check_architecture_viewpoint_diagrams(repo_root, allow_missing_specs=allow_missing_specs, strict=strict)
+    check_dual_schema_ssot_parity(repo_root)
 
 def _run_verification(args, dest, repo_root, is_flutter, is_react):
-    # Run Checks 10 through 25
-    run_all_checks(repo_root)
+    # Run Checks 10 through 31
+    allow_missing = getattr(args, "allow_missing_specs", False)
+    strict = getattr(args, "strict", False)
+    is_strict = strict or (os.environ.get("DEAP_STRICT_BASELINE", "").lower() in ("1", "true", "yes"))
+    if not is_strict and not allow_missing:
+        if _has_clean_landing_zones(repo_root):
+            allow_missing = True
+    run_all_checks(repo_root, allow_missing_specs=allow_missing, strict=strict)
 
     if is_flutter:
         print(f"Verifying conformance for platform 'flutter' at '{dest}'...")
